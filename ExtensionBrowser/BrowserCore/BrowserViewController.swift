@@ -573,7 +573,11 @@ final class BrowserViewController: UIViewController {
 
     @objc private func reloadOrStop() {
         guard let webView = displayedWebView else { return }
-        webView.isLoading ? webView.stopLoading() : webView.reload()
+        if webView.isLoading {
+            webView.stopLoading()
+        } else {
+            webView.reload()
+        }
     }
 
     @objc private func showTabSwitcher() {

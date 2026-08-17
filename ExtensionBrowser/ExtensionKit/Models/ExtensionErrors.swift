@@ -40,9 +40,9 @@ public enum ExtensionManifestError: LocalizedError, Equatable, Sendable {
         case .unsupportedPermission(let permission):
             return "The extension requests an unsupported permission: \(permission)"
         case .multipleManifests:
-            return "The archive contains more than one manifest.json."
+            return "The extension package contains more than one manifest.json."
         case .manifestNotFound:
-            return "The archive does not contain manifest.json."
+            return "The extension package does not contain manifest.json."
         }
     }
 }
@@ -70,17 +70,17 @@ public enum ExtensionInstallError: LocalizedError, Equatable, Sendable {
         case .archiveTooLarge(let limit):
             return "The ZIP archive exceeds the \(limit) byte limit."
         case .archiveUnreadable:
-            return "The selected file is not a readable ZIP archive."
+            return "The selected item is not a readable ZIP archive or extension folder."
         case .tooManyEntries(let limit):
-            return "The ZIP archive contains more than \(limit) entries."
+            return "The extension package contains more than \(limit) entries."
         case .entryTooLarge(let path, let limit):
             return "'\(path)' exceeds the \(limit) byte per-file limit."
         case .expandedArchiveTooLarge(let limit):
             return "The extracted extension exceeds the \(limit) byte limit."
         case .invalidEntryPath(let path):
-            return "The ZIP archive contains an unsafe path: \(path)"
+            return "The extension package contains an unsafe path: \(path)"
         case .duplicateEntryPath(let path):
-            return "The ZIP archive contains a duplicate path: \(path)"
+            return "The extension package contains a duplicate path: \(path)"
         case .symbolicLinkNotAllowed(let path):
             return "Symbolic links are not allowed in extensions: \(path)"
         case .unsupportedEntry(let path):

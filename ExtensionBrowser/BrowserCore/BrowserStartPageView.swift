@@ -8,6 +8,7 @@ final class BrowserStartPageView: UIView {
     var onExtensions: (() -> Void)?
 
     private let scrollView = UIScrollView()
+    private let contentContainer = UIView()
     private let contentStack = UIStackView()
     private let logoContainer = UIView()
     private let logoImageView = UIImageView()
@@ -44,6 +45,7 @@ final class BrowserStartPageView: UIView {
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.alwaysBounceVertical = true
         scrollView.keyboardDismissMode = .interactive
+        scrollView.contentInsetAdjustmentBehavior = .never
 
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         contentStack.axis = .vertical
@@ -98,8 +100,11 @@ final class BrowserStartPageView: UIView {
         contentStack.setCustomSpacing(24, after: brandStack)
         contentStack.addArrangedSubview(actionsStack)
 
+        contentContainer.translatesAutoresizingMaskIntoConstraints = false
+
         addSubview(scrollView)
-        scrollView.addSubview(contentStack)
+        scrollView.addSubview(contentContainer)
+        contentContainer.addSubview(contentStack)
 
         let preferredContentWidth = contentStack.widthAnchor.constraint(
             equalTo: scrollView.frameLayoutGuide.widthAnchor,
@@ -113,12 +118,20 @@ final class BrowserStartPageView: UIView {
             scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            contentStack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 28),
-            contentStack.leadingAnchor.constraint(greaterThanOrEqualTo: scrollView.frameLayoutGuide.leadingAnchor, constant: 18),
-            contentStack.trailingAnchor.constraint(lessThanOrEqualTo: scrollView.frameLayoutGuide.trailingAnchor, constant: -18),
-            contentStack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -28),
+            contentContainer.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            contentContainer.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            contentContainer.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            contentContainer.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            contentContainer.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
+            contentContainer.heightAnchor.constraint(greaterThanOrEqualTo: scrollView.frameLayoutGuide.heightAnchor),
+
+            contentStack.topAnchor.constraint(greaterThanOrEqualTo: contentContainer.topAnchor, constant: 24),
+            contentStack.leadingAnchor.constraint(greaterThanOrEqualTo: contentContainer.leadingAnchor, constant: 18),
+            contentStack.trailingAnchor.constraint(lessThanOrEqualTo: contentContainer.trailingAnchor, constant: -18),
+            contentStack.bottomAnchor.constraint(lessThanOrEqualTo: contentContainer.bottomAnchor, constant: -24),
             contentStack.widthAnchor.constraint(lessThanOrEqualToConstant: 540),
-            contentStack.centerXAnchor.constraint(equalTo: scrollView.frameLayoutGuide.centerXAnchor),
+            contentStack.centerXAnchor.constraint(equalTo: contentContainer.centerXAnchor),
+            contentStack.centerYAnchor.constraint(equalTo: contentContainer.centerYAnchor, constant: -8),
             preferredContentWidth,
 
             logoContainer.widthAnchor.constraint(equalToConstant: 64),

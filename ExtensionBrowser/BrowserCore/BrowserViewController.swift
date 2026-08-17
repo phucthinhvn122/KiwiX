@@ -188,6 +188,7 @@ final class BrowserViewController: UIViewController {
         addressField.layer.borderWidth = 1.5
         addressField.font = .systemFont(ofSize: 16, weight: .regular)
         addressField.adjustsFontForContentSizeCategory = false
+        addressField.isUserInteractionEnabled = true
         addressField.placeholder = "Search or enter an address"
         addressField.clearButtonMode = .whileEditing
         addressField.autocapitalizationType = .none
@@ -200,6 +201,7 @@ final class BrowserViewController: UIViewController {
         addressField.enablesReturnKeyAutomatically = true
         addressField.delegate = self
         addressField.accessibilityLabel = "Address and search"
+        addressField.addTarget(self, action: #selector(focusAddressField), for: .touchDown)
 
         addressIconView.translatesAutoresizingMaskIntoConstraints = false
         addressIconView.image = UIImage(systemName: "magnifyingglass")
@@ -207,6 +209,7 @@ final class BrowserViewController: UIViewController {
         addressIconView.contentMode = .scaleAspectFit
         addressIconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)
         let addressIconContainer = UIView(frame: CGRect(x: 0, y: 0, width: 46, height: 42))
+        addressIconContainer.isUserInteractionEnabled = false
         addressIconContainer.addSubview(addressIconView)
         NSLayoutConstraint.activate([
             addressIconView.leadingAnchor.constraint(equalTo: addressIconContainer.leadingAnchor, constant: 14),
@@ -303,6 +306,12 @@ final class BrowserViewController: UIViewController {
         button.accessibilityLabel = label
         if let action {
             button.addTarget(self, action: action, for: .touchUpInside)
+        }
+    }
+
+    @objc private func focusAddressField() {
+        if !addressField.isFirstResponder {
+            addressField.becomeFirstResponder()
         }
     }
 

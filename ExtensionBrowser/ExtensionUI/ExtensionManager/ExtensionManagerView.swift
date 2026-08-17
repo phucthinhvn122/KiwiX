@@ -27,11 +27,11 @@ struct ExtensionManagerView: View {
                             Label("No Extensions", systemImage: "puzzlepiece.extension")
                         },
                         description: {
-                            Text("Choose a ZIP containing one Manifest V3 extension and its manifest.json file.")
+                            Text("Choose a ZIP or folder containing one Manifest V3 extension and its manifest.json file.")
                         },
                         actions: {
                             Button { showsImporter = true } label: {
-                                Label("Import Extension from Files", systemImage: "folder.badge.plus")
+                                Label("Import ZIP or Folder", systemImage: "folder.badge.plus")
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.large)
@@ -41,11 +41,11 @@ struct ExtensionManagerView: View {
                     List {
                         Section {
                             Button { showsImporter = true } label: {
-                                Label("Import Extension from Files", systemImage: "folder.badge.plus")
+                                Label("Import ZIP or Folder", systemImage: "folder.badge.plus")
                             }
                             .disabled(viewModel.isWorking)
                         } footer: {
-                            Text("Select a .zip package containing manifest.json.")
+                            Text("Select a ZIP or an unpacked extension folder containing manifest.json.")
                         }
 
                         Section("Installed") {
@@ -94,27 +94,25 @@ struct ExtensionManagerView: View {
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
-            guard let archive = urls.first(where: { $0.pathExtension.lowercased() == "zip" }) else {
-                viewModel.errorMessage = "Drop a .zip extension package."
+            guard let package = urls.first(where: isSupportedPackage) else {
+                viewModel.errorMessage = "Drop a ZIP or extension folder containing manifest.json."
                 return false
             }
-            viewModel.prepareImport(from: archive)
+            viewModel.prepareImport(from: package)
             return true
         } isTargeted: { isTargeted in
             isDropTargeted = isTargeted
         }
         .task { viewModel.refresh() }
-        .fileImporter(
-            isPresented: $showsImporter,
-            allowedContentTypes: [.zip],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                if let url = urls.first { viewModel.prepareImport(from: url) }
-            case .failure(let error):
-                viewModel.errorMessage = error.localizedDescription
+        .sheet(isPresented: $showsImporter) {
+            ExtensionPackageDocumentPicker { packageURL in
+                showsImporter = false
+                guard let packageURL else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    viewModel.prepareImport(from: packageURL)
+                }
             }
+            .ignoresSafeArea()
         }
         .sheet(item: $viewModel.pendingPreview, onDismiss: {
             if viewModel.pendingPreview != nil { viewModel.cancelImport() }
@@ -154,6 +152,11 @@ struct ExtensionManagerView: View {
         }
     }
 
+    private func isSupportedPackage(_ url: URL) -> Bool {
+        if url.pathExtension.lowercased() == "zip" { return true }
+        return (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+    }
+
     @ViewBuilder
     private func extensionRow(_ item: InstalledExtension) -> some View {
         HStack(spacing: 12) {
@@ -172,6 +175,50 @@ struct ExtensionManagerView: View {
             .labelsHidden()
         }
         .padding(.vertical, 3)
+    }
+}
+
+private struct ExtensionPackageDocumentPicker: UIViewControllerRepresentable {
+    let onSelection: (URL?) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onSelection: onSelection)
+    }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: [.zip, .folder, .data],
+            asCopy: true
+        )
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = false
+        picker.shouldShowFileExtensions = true
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        private let onSelection: (URL?) -> Void
+        private var hasCompleted = false
+
+        init(onSelection: @escaping (URL?) -> Void) {
+            self.onSelection = onSelection
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            complete(with: urls.first)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            complete(with: nil)
+        }
+
+        private func complete(with url: URL?) {
+            guard !hasCompleted else { return }
+            hasCompleted = true
+            onSelection(url)
+        }
     }
 }
 

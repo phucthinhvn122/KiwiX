@@ -18,9 +18,9 @@ public actor ExtensionInstaller {
         self.parser = parser
     }
 
-    public func prepareImport(from archiveURL: URL) throws -> ExtensionPackagePreview {
-        let accessed = archiveURL.startAccessingSecurityScopedResource()
-        defer { if accessed { archiveURL.stopAccessingSecurityScopedResource() } }
+    public func prepareImport(from packageURL: URL) throws -> ExtensionPackagePreview {
+        let accessed = packageURL.startAccessingSecurityScopedResource()
+        defer { if accessed { packageURL.stopAccessingSecurityScopedResource() } }
 
         let container = fileManager.temporaryDirectory
             .appendingPathComponent("ExtensionBrowserImports", isDirectory: true)
@@ -28,7 +28,14 @@ public actor ExtensionInstaller {
         let extracted = container.appendingPathComponent("extracted", isDirectory: true)
         do {
             try fileManager.createDirectory(at: container, withIntermediateDirectories: true, attributes: nil)
-            try extractor.extract(archiveURL: archiveURL, to: extracted, fileManager: fileManager)
+            let values = try packageURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+            if values.isDirectory == true {
+                try extractor.copyDirectory(from: packageURL, to: extracted, fileManager: fileManager)
+            } else if values.isRegularFile == true {
+                try extractor.extract(archiveURL: packageURL, to: extracted, fileManager: fileManager)
+            } else {
+                throw ExtensionInstallError.archiveUnreadable
+            }
             let manifestURL = try locateManifest(in: extracted)
             let extensionRoot = manifestURL.deletingLastPathComponent()
             let manifest = try parser.parse(fileURL: manifestURL)

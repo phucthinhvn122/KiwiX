@@ -110,6 +110,99 @@ public struct SafeZIPExtractor: Sendable {
         }
     }
 
+    public func copyDirectory(from sourceURL: URL, to destinationURL: URL, fileManager: FileManager = .default) throws {
+        guard sourceURL.isFileURL else { throw ExtensionInstallError.archiveUnreadable }
+        let rootValues = try sourceURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard rootValues.isDirectory == true, rootValues.isSymbolicLink != true else {
+            throw ExtensionInstallError.archiveUnreadable
+        }
+
+        let root = sourceURL.standardizedFileURL
+        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        let resourceKeys: Set<URLResourceKey> = [
+            .isDirectoryKey,
+            .isRegularFileKey,
+            .isSymbolicLinkKey,
+            .fileSizeKey
+        ]
+        var enumerationError: Error?
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: Array(resourceKeys),
+            options: [],
+            errorHandler: { _, error in
+                enumerationError = error
+                return false
+            }
+        ) else {
+            throw ExtensionInstallError.archiveUnreadable
+        }
+
+        var total: UInt64 = 0
+        var normalizedPaths = Set<String>()
+        var validated: [(source: URL, path: String, isDirectory: Bool)] = []
+        for case let source as URL in enumerator {
+            guard validated.count < limits.maximumEntryCount else {
+                throw ExtensionInstallError.tooManyEntries(limit: limits.maximumEntryCount)
+            }
+            let standardizedSource = source.standardizedFileURL
+            guard standardizedSource.path.hasPrefix(rootPrefix) else {
+                throw ExtensionInstallError.invalidEntryPath(source.lastPathComponent)
+            }
+
+            let values = try source.resourceValues(forKeys: resourceKeys)
+            let relativePath = String(standardizedSource.path.dropFirst(rootPrefix.count))
+            guard values.isSymbolicLink != true else {
+                throw ExtensionInstallError.symbolicLinkNotAllowed(relativePath)
+            }
+            guard values.isDirectory == true || values.isRegularFile == true else {
+                throw ExtensionInstallError.unsupportedEntry(relativePath)
+            }
+
+            let path = try Self.validateEntryPath(relativePath, isDirectory: values.isDirectory == true)
+            let collisionKey = path.precomposedStringWithCanonicalMapping.lowercased()
+            guard normalizedPaths.insert(collisionKey).inserted else {
+                throw ExtensionInstallError.duplicateEntryPath(path)
+            }
+            guard !Self.hasNativeBinaryExtension(path) else {
+                throw ExtensionInstallError.nativeBinaryNotAllowed(path)
+            }
+
+            if values.isRegularFile == true {
+                let size = UInt64(max(values.fileSize ?? 0, 0))
+                guard size <= limits.maximumEntryBytes else {
+                    throw ExtensionInstallError.entryTooLarge(path: path, limit: limits.maximumEntryBytes)
+                }
+                let (newTotal, overflow) = total.addingReportingOverflow(size)
+                guard !overflow, newTotal <= limits.maximumExpandedBytes else {
+                    throw ExtensionInstallError.expandedArchiveTooLarge(limit: limits.maximumExpandedBytes)
+                }
+                total = newTotal
+                if try Self.hasNativeBinaryMagic(at: source) {
+                    throw ExtensionInstallError.nativeBinaryNotAllowed(path)
+                }
+            }
+            validated.append((source, path, values.isDirectory == true))
+        }
+        if enumerationError != nil { throw ExtensionInstallError.archiveUnreadable }
+
+        try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true, attributes: nil)
+        for item in validated.sorted(by: { $0.path < $1.path }) {
+            let targetURL = try Self.containedDestination(for: item.path, under: destinationURL)
+            if item.isDirectory {
+                try fileManager.createDirectory(at: targetURL, withIntermediateDirectories: true, attributes: nil)
+            } else {
+                try fileManager.createDirectory(
+                    at: targetURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true,
+                    attributes: nil
+                )
+                try fileManager.copyItem(at: item.source, to: targetURL)
+                try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: targetURL.path)
+            }
+        }
+    }
+
     public static func validateEntryPath(_ path: String, isDirectory: Bool = false) throws -> String {
         do {
             return try ExtensionResourcePath.normalize(path, allowsTrailingSlash: isDirectory)

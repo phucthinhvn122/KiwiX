@@ -113,8 +113,8 @@ schemes:
       gatherCoverageData: true
       targets:
         - name: ExtensionBrowserTests
-          parallelizable: true
-          randomExecutionOrder: true
+          parallelizable: false
+          randomExecutionOrder: false
     run:
       config: Debug
     archive:

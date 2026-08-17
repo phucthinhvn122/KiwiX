@@ -51,13 +51,21 @@ jobs:
           echo "udid=${udid}" >> "${GITHUB_OUTPUT}"
           echo "Selected simulator: ${udid} (maximum runtime ${sdk_version})"
 
+      - name: Boot selected Simulator
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+        run: |
+          set -euo pipefail
+          xcrun simctl boot "${SIMULATOR_UDID}" 2>/dev/null || true
+          xcrun simctl bootstatus "${SIMULATOR_UDID}" -b
+
       - name: Check source for private API
         run: make private-api
 
       - name: Run tests
         env:
           DESTINATION: platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}
-        run: make test DESTINATION="${DESTINATION}"
+        run: make test DESTINATION="${DESTINATION}" TEST_RESULT_BUNDLE_PATH="build/Tests.xcresult"
 
       - name: Build release Simulator app
         run: make build CONFIGURATION=Release DESTINATION="generic/platform=iOS Simulator" DERIVED_DATA="build/simulator"

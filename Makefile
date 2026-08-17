@@ -5,6 +5,7 @@ DERIVED_DATA ?= build/DerivedData
 DESTINATION ?= generic/platform=iOS Simulator
 BUNDLE_IDENTIFIER ?= com.phucthinhvn122.KiwiX
 RESULT_BUNDLE_PATH ?= build/Benchmarks.xcresult
+TEST_RESULT_BUNDLE_PATH ?= build/Tests.xcresult
 
 .PHONY: generate build test ipa bench private-api clean
 
@@ -23,13 +24,20 @@ build: generate private-api
 		clean build
 
 test: generate private-api
+	rm -rf -- "$(TEST_RESULT_BUNDLE_PATH)"
 	xcodebuild \
 		-project "$(PROJECT)" \
 		-scheme "$(SCHEME)" \
 		-destination "$(DESTINATION)" \
+		-destination-timeout 120 \
 		-derivedDataPath "$(DERIVED_DATA)" \
+		-resultBundlePath "$(TEST_RESULT_BUNDLE_PATH)" \
+		-test-timeouts-enabled YES \
+		-default-test-execution-time-allowance 60 \
+		-maximum-test-execution-time-allowance 120 \
 		BUNDLE_IDENTIFIER="$(BUNDLE_IDENTIFIER)" \
 		CODE_SIGNING_ALLOWED=NO \
+		-parallel-testing-enabled NO \
 		test
 
 ipa: generate private-api

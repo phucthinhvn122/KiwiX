@@ -1,6 +1,6 @@
 # Quyết định kiến trúc KiwiX / ExtensionBrowser v3
 
-Trạng thái: **ĐÃ DUYỆT — M0 đang triển khai**
+Trạng thái: **ĐÃ DUYỆT — M0 CI xanh; DoD thiết bị chờ signing/provisioning**
 Cập nhật: 2026-08-17
 
 Tài liệu này là cổng quyết định bắt buộc trước khi sửa runtime hiện tại hoặc bắt đầu M0. Các mục ghi

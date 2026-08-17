@@ -5,7 +5,8 @@
 > không được xem phần legacy là kiến trúc mục tiêu hoặc bằng chứng compatibility.
 
 Các quyết định đã chốt nằm trong [DECISIONS.md](DECISIONS.md), rủi ro và stop-ship conditions nằm
-trong [RISKS.md](RISKS.md).
+trong [RISKS.md](RISKS.md). Bằng chứng build/test M0 và gate còn lại nằm trong
+[M0_REPORT.md](M0_REPORT.md).
 
 ExtensionBrowser là proof-of-concept browser native cho iPhone, viết bằng Swift, UIKit và WebKit. MVP tập trung vào browser nhiều tab có quản lý bộ nhớ và một compatibility layer nhỏ cho WebExtensions: nhập ZIP Manifest V3, kiểm tra package, cài đặt, match URL rồi inject content script JavaScript/CSS.
 

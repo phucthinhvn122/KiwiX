@@ -14,6 +14,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     ) {
         guard let windowScene = scene as? UIWindowScene else { return }
 
+        KiwiTheme.applyGlobalAppearance()
+
         let extensionIntegration = ExtensionBrowserIntegration()
         extensionIntegration.activate()
         self.extensionIntegration = extensionIntegration
@@ -32,7 +34,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
 
         let window = UIWindow(windowScene: windowScene)
-        window.tintColor = .systemBlue
+        window.tintColor = KiwiTheme.accentDeep
         window.rootViewController = browser
         window.makeKeyAndVisible()
         self.window = window

@@ -28,7 +28,7 @@ final class TabSwitcherViewController: UIViewController {
         self.items = items
         self.selectedTabID = selectedTabID
         super.init(nibName: nil, bundle: nil)
-        title = "Tabs"
+        title = "Open Tabs"
     }
 
     @available(*, unavailable)
@@ -38,7 +38,9 @@ final class TabSwitcherViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .systemGroupedBackground
+        view.backgroundColor = KiwiTheme.canvas
+        navigationItem.largeTitleDisplayMode = .always
+        navigationItem.prompt = tabCountText
 
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.backgroundColor = .clear
@@ -55,7 +57,7 @@ final class TabSwitcherViewController: UIViewController {
         ])
 
         navigationItem.leftBarButtonItem = UIBarButtonItem(
-            barButtonSystemItem: .done,
+            barButtonSystemItem: .close,
             target: self,
             action: #selector(dismissSwitcher)
         )
@@ -82,22 +84,27 @@ final class TabSwitcherViewController: UIViewController {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         items.remove(at: index)
         collectionView.deleteItems(at: [IndexPath(item: index, section: 0)])
+        navigationItem.prompt = tabCountText
+    }
+
+    private var tabCountText: String {
+        "\(items.count) \(items.count == 1 ? "tab" : "tabs")"
     }
 
     private func makeLayout() -> UICollectionViewLayout {
         UICollectionViewCompositionalLayout { _, environment in
             let availableWidth = environment.container.effectiveContentSize.width
-            let columnCount = availableWidth >= 700 ? 3 : 2
+            let columnCount = availableWidth >= 760 ? 3 : 2
             let itemSize = NSCollectionLayoutSize(
                 widthDimension: .fractionalWidth(1.0 / CGFloat(columnCount)),
-                heightDimension: .estimated(250)
+                heightDimension: .estimated(268)
             )
             let item = NSCollectionLayoutItem(layoutSize: itemSize)
             item.contentInsets = NSDirectionalEdgeInsets(top: 7, leading: 7, bottom: 7, trailing: 7)
 
             let groupSize = NSCollectionLayoutSize(
                 widthDimension: .fractionalWidth(1),
-                heightDimension: .estimated(250)
+                heightDimension: .estimated(268)
             )
             let group = NSCollectionLayoutGroup.horizontal(
                 layoutSize: groupSize,
@@ -105,7 +112,7 @@ final class TabSwitcherViewController: UIViewController {
                 count: columnCount
             )
             let section = NSCollectionLayoutSection(group: group)
-            section.contentInsets = NSDirectionalEdgeInsets(top: 9, leading: 9, bottom: 24, trailing: 9)
+            section.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 10, bottom: 32, trailing: 10)
             return section
         }
     }
@@ -159,19 +166,23 @@ private final class TabCardCell: UICollectionViewCell {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        contentView.backgroundColor = .secondarySystemGroupedBackground
-        contentView.layer.cornerRadius = 14
+        contentView.backgroundColor = KiwiTheme.elevatedSurface
+        contentView.layer.cornerRadius = 20
         contentView.layer.cornerCurve = .continuous
         contentView.layer.masksToBounds = true
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.10
+        layer.shadowRadius = 12
+        layer.shadowOffset = CGSize(width: 0, height: 5)
 
         snapshotView.translatesAutoresizingMaskIntoConstraints = false
-        snapshotView.backgroundColor = .tertiarySystemBackground
-        snapshotView.contentMode = .scaleAspectFill
+        snapshotView.backgroundColor = KiwiTheme.fieldSurface
+        snapshotView.contentMode = .scaleAspectFit
         snapshotView.clipsToBounds = true
         snapshotView.image = UIImage(systemName: "globe")
         snapshotView.tintColor = .tertiaryLabel
 
-        titleLabel.font = .preferredFont(forTextStyle: .headline)
+        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
         titleLabel.adjustsFontForContentSizeCategory = true
         titleLabel.numberOfLines = 1
 
@@ -180,8 +191,8 @@ private final class TabCardCell: UICollectionViewCell {
         faviconView.setContentHuggingPriority(.required, for: .horizontal)
         faviconView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            faviconView.widthAnchor.constraint(equalToConstant: 18),
-            faviconView.heightAnchor.constraint(equalToConstant: 18)
+            faviconView.widthAnchor.constraint(equalToConstant: 20),
+            faviconView.heightAnchor.constraint(equalToConstant: 20)
         ])
 
         urlLabel.font = .preferredFont(forTextStyle: .caption1)
@@ -189,11 +200,16 @@ private final class TabCardCell: UICollectionViewCell {
         urlLabel.textColor = .secondaryLabel
         urlLabel.numberOfLines = 1
 
-        stateLabel.font = .preferredFont(forTextStyle: .caption2)
-        stateLabel.textColor = .tertiaryLabel
+        stateLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        stateLabel.textColor = KiwiTheme.accentDeep
 
-        closeButton.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
-        closeButton.tintColor = .secondaryLabel
+        var closeConfiguration = UIButton.Configuration.tinted()
+        closeConfiguration.image = UIImage(systemName: "xmark")
+        closeConfiguration.cornerStyle = .capsule
+        closeConfiguration.baseForegroundColor = .secondaryLabel
+        closeConfiguration.baseBackgroundColor = UIColor.secondaryLabel.withAlphaComponent(0.12)
+        closeConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)
+        closeButton.configuration = closeConfiguration
         closeButton.accessibilityLabel = "Close tab"
         closeButton.addAction(UIAction { [weak self] _ in self?.onClose?() }, for: .touchUpInside)
 
@@ -203,7 +219,12 @@ private final class TabCardCell: UICollectionViewCell {
         titleRow.spacing = 6
         closeButton.setContentHuggingPriority(.required, for: .horizontal)
 
-        let details = UIStackView(arrangedSubviews: [titleRow, urlLabel, stateLabel])
+        let stateSpacer = UIView()
+        let stateRow = UIStackView(arrangedSubviews: [stateLabel, stateSpacer])
+        stateRow.axis = .horizontal
+        stateLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        let details = UIStackView(arrangedSubviews: [titleRow, urlLabel, stateRow])
         details.translatesAutoresizingMaskIntoConstraints = false
         details.axis = .vertical
         details.spacing = 3
@@ -214,12 +235,12 @@ private final class TabCardCell: UICollectionViewCell {
             snapshotView.topAnchor.constraint(equalTo: contentView.topAnchor),
             snapshotView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             snapshotView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            snapshotView.heightAnchor.constraint(equalTo: snapshotView.widthAnchor, multiplier: 1.05),
+            snapshotView.heightAnchor.constraint(equalTo: snapshotView.widthAnchor, multiplier: 0.92),
 
-            details.topAnchor.constraint(equalTo: snapshotView.bottomAnchor, constant: 10),
-            details.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
-            details.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
-            details.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -11)
+            details.topAnchor.constraint(equalTo: snapshotView.bottomAnchor, constant: 12),
+            details.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 13),
+            details.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -10),
+            details.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -13)
         ])
     }
 
@@ -237,13 +258,33 @@ private final class TabCardCell: UICollectionViewCell {
     }
 
     func configure(item: TabSwitcherViewController.Item, isSelectedTab: Bool) {
-        snapshotView.image = item.snapshot ?? UIImage(systemName: item.isPrivate ? "hand.raised.fill" : "globe")
+        snapshotView.image = item.snapshot ?? UIImage(systemName: item.isPrivate ? "hand.raised.fill" : "safari.fill")
+        snapshotView.contentMode = item.snapshot == nil ? .scaleAspectFit : .scaleAspectFill
         faviconView.image = item.favicon ?? UIImage(systemName: item.isPrivate ? "hand.raised.fill" : "globe")
-        titleLabel.text = item.isPrivate ? "Private — \(item.title)" : item.title
+        titleLabel.text = item.title
         urlLabel.text = item.urlText
-        stateLabel.text = item.lifecycleState.rawValue
-        contentView.layer.borderColor = UIColor.systemBlue.cgColor
+        stateLabel.text = statusText(for: item, isSelectedTab: isSelectedTab)
+        stateLabel.textColor = item.isPrivate ? KiwiTheme.privateAccent : KiwiTheme.accentDeep
+        contentView.layer.borderColor = (item.isPrivate ? KiwiTheme.privateAccent : KiwiTheme.accentDeep).cgColor
         contentView.layer.borderWidth = isSelectedTab ? 2 : 0
         accessibilityLabel = "\(titleLabel.text ?? "Tab"), \(urlLabel.text ?? "")"
+    }
+
+    private func statusText(
+        for item: TabSwitcherViewController.Item,
+        isSelectedTab: Bool
+    ) -> String {
+        var parts: [String] = []
+        if item.isPrivate { parts.append("Private") }
+        if isSelectedTab {
+            parts.append("Current")
+        } else {
+            switch item.lifecycleState {
+            case .active: parts.append("Active")
+            case .warm: parts.append("Ready")
+            case .suspended: parts.append("Sleeping")
+            }
+        }
+        return parts.joined(separator: "  •  ")
     }
 }

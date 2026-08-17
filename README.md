@@ -96,12 +96,12 @@ Mở pull request để workflow **Build Simulator** compile và chạy unit tes
 - `Tabs`: model/session store, tạo/chọn/đóng tab, snapshot và lifecycle `ACTIVE` / `WARM` / `SUSPENDED`.
 - `ExtensionKit`: manifest parser/validator, ZIP installer, deterministic extension ID, URL matcher, permission gate, storage namespace, content-script injection và bridge message.
 - `ExtensionUI`: Files picker, preview permission trước khi install, danh sách bật/tắt/xóa extension và details.
-- `Settings`: search engine built-in/custom và debug information. `History` có actor store + màn hình xem/xóa/mở lại; `Downloads` vẫn là boundary dự kiến.
+- `Settings`: search engine built-in/custom và thông tin privacy. `History` có actor store + màn hình xem/xóa/mở lại; `Downloads` nhận file trực tiếp từ WebKit, hiển thị tiến độ và cho phép mở/xóa file.
 - `Shared`: logging, signpost, diagnostics và boundary hẹp giữa browser với extension runtime.
 
 Normal tabs dùng persistent website data store và chia sẻ process pool. Private tabs dùng non-persistent store/process pool riêng, không ghi history/session và không cấu hình extension runtime trong MVP.
 
-Browser MVP hiện có bottom toolbar Back/Forward, address-or-search, Reload/Stop, tab count và menu; progress KVO, page title/URL tracking, Share, Open in External App, History, lỗi navigation + Retry, JavaScript alert/confirm/prompt và mở `target=_blank` thành tab mới. Tab switcher hiển thị snapshot/lifecycle, normal session được persist; memory warning snapshot rồi release toàn bộ background web view. Debug build có metrics URL/tab/live web-view/navigation/memory cùng extension diagnostics khi runtime đã đăng ký.
+Browser MVP hiện có start page KiwiX, bottom toolbar hai hàng Back/Forward, address-or-search, Reload/Stop, tab count và menu; progress KVO, page title/URL tracking, Share, Open in External App, History, Downloads, lỗi navigation + Retry, JavaScript alert/confirm/prompt và mở `target=_blank` thành tab mới. Tab switcher hiển thị snapshot/lifecycle, normal session được persist; memory warning snapshot rồi release toàn bộ background web view. Debug build có metrics URL/tab/live web-view/navigation/memory cùng extension diagnostics khi runtime đã đăng ký.
 
 ## GitHub Actions
 
@@ -239,7 +239,7 @@ Do máy Windows không có Xcode/WebKit SDK iOS, không dùng kết quả parse 
 - Không hỗ trợ Manifest V2; popup renderer/provider đã có nhưng action toolbar và lifecycle popup hoàn chỉnh chưa được nối vào browser chrome.
 - Main-frame content scripts là trọng tâm MVP; iframe/all-frames, extension update/migration và permission prompt theo domain cần hoàn thiện.
 - Tab suspension khôi phục URL/snapshot, không serialize toàn bộ JavaScript heap, form state hay back-forward list của trang.
-- History đã có store/UI và chỉ ghi navigation HTTP(S) của tab thường. Downloads chưa được implement. Favicon mới chỉ lưu candidate `/favicon.ico`, chưa download/render icon.
+- History đã có store/UI và chỉ ghi navigation HTTP(S) của tab thường. Downloads đã được nối với `WKDownload`, có tiến độ và lưu metadata an toàn; private download chỉ tồn tại trong phiên hiện tại. Favicon mới chỉ lưu candidate `/favicon.ico`, chưa download/render icon.
 - Simulator build không chạy trực tiếp trên Windows; signed device build không thể tồn tại nếu thiếu Apple signing assets hợp lệ.
 - Chưa có bằng chứng build từ macOS cho đến khi workflow GitHub Actions đầu tiên chạy thành công.
 

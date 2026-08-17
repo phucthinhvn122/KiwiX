@@ -11,7 +11,7 @@ struct ExtensionPermissionListView: View {
             ForEach(permissions, id: \.self) { permission in
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: permission.contains("://") || permission == "<all_urls>" ? "globe" : "hand.raised")
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(Color(uiColor: KiwiTheme.accentDeep))
                         .frame(width: 22)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(permission)

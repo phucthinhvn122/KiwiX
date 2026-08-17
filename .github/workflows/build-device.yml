@@ -50,6 +50,9 @@ jobs:
           test -d "${PROJECT}"
           xcodebuild -project "${PROJECT}" -list
 
+      - name: Verify no advertising SDKs are present
+        run: make ad-free
+
       - name: Build unsigned device archive
         run: |
           set -euo pipefail

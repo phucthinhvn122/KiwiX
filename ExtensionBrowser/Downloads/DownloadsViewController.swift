@@ -19,6 +19,8 @@ final class DownloadsViewController: UITableViewController, UIDocumentInteractio
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        tableView.backgroundColor = KiwiTheme.canvas
+        navigationItem.largeTitleDisplayMode = .always
         tableView.register(DownloadTableViewCell.self, forCellReuseIdentifier: DownloadTableViewCell.reuseIdentifier)
         navigationItem.leftBarButtonItem = UIBarButtonItem(
             barButtonSystemItem: .done,
@@ -142,15 +144,14 @@ final class DownloadsViewController: UITableViewController, UIDocumentInteractio
 
     private func updateEmptyState() {
         guard items.isEmpty else {
-            tableView.backgroundView = nil
+            contentUnavailableConfiguration = nil
             return
         }
-        let label = UILabel()
-        label.text = "No Downloads"
-        label.textColor = .secondaryLabel
-        label.font = .preferredFont(forTextStyle: .headline)
-        label.textAlignment = .center
-        tableView.backgroundView = label
+        contentUnavailableConfiguration = KiwiTheme.emptyConfiguration(
+            title: "Nothing Downloaded",
+            message: "Files you download from the web will be collected here.",
+            systemImage: "arrow.down.circle"
+        )
     }
 
     private func showError(_ message: String) {
@@ -195,6 +196,7 @@ private final class DownloadTableViewCell: UITableViewCell {
         content.secondaryText = secondaryText(for: item)
         content.secondaryTextProperties.numberOfLines = 2
         content.image = UIImage(systemName: imageName(for: item.status))
+        content.imageProperties.tintColor = tintColor(for: item.status)
         contentConfiguration = content
 
         progressView.isHidden = item.status != .downloading
@@ -240,6 +242,15 @@ private final class DownloadTableViewCell: UITableViewCell {
             return "exclamationmark.circle"
         case .cancelled:
             return "xmark.circle"
+        }
+    }
+
+    private func tintColor(for status: DownloadStatus) -> UIColor {
+        switch status {
+        case .queued, .downloading: return KiwiTheme.cyan
+        case .completed: return KiwiTheme.accentDeep
+        case .failed: return .systemRed
+        case .cancelled: return .secondaryLabel
         }
     }
 

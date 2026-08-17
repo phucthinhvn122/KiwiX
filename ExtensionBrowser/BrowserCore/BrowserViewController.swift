@@ -7,9 +7,11 @@ final class BrowserViewController: UIViewController {
     private let settingsStore: BrowserSettingsStore
     private let extensionBridge: BrowserExtensionBridge
     private let historyStore: HistoryStore
+    private let downloadCoordinator: DownloadCoordinator
 
     private let webContentContainer = UIView()
     private let toolbar = UIView()
+    private let toolbarMaterial = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
     private let progressView = UIProgressView(progressViewStyle: .bar)
     private let addressField = UITextField()
     private let addressIconView = UIImageView()
@@ -22,6 +24,7 @@ final class BrowserViewController: UIViewController {
     private let snapshotView = UIImageView()
     private let restorationSpinner = UIActivityIndicatorView(style: .medium)
     private let errorView = BrowserErrorView()
+    private let startPageView = BrowserStartPageView()
 
     private weak var displayedWebView: WKWebView?
     private var webViewObservations: [NSKeyValueObservation] = []
@@ -33,12 +36,14 @@ final class BrowserViewController: UIViewController {
         tabManager: TabManager? = nil,
         settingsStore: BrowserSettingsStore? = nil,
         extensionBridge: BrowserExtensionBridge? = nil,
-        historyStore: HistoryStore? = nil
+        historyStore: HistoryStore? = nil,
+        downloadCoordinator: DownloadCoordinator? = nil
     ) {
         self.tabManager = tabManager ?? TabManager()
         self.settingsStore = settingsStore ?? .shared
         self.extensionBridge = extensionBridge ?? .shared
         self.historyStore = historyStore ?? HistoryStore()
+        self.downloadCoordinator = downloadCoordinator ?? DownloadCoordinator()
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -58,6 +63,12 @@ final class BrowserViewController: UIViewController {
             self,
             selector: #selector(handleExtensionCreateTabRequest(_:)),
             name: BrowserExtensionNotifications.requestCreateTab,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleSettingsChange),
+            name: .browserSettingsDidChange,
             object: nil
         )
 
@@ -92,18 +103,19 @@ final class BrowserViewController: UIViewController {
     private func configureInterface() {
         configureContentArea()
         configureToolbar()
+        configureStartPage()
         updateControls()
     }
 
     private func configureContentArea() {
         webContentContainer.translatesAutoresizingMaskIntoConstraints = false
-        webContentContainer.backgroundColor = .systemBackground
+        webContentContainer.backgroundColor = KiwiTheme.canvas
         webContentContainer.clipsToBounds = true
 
         snapshotView.translatesAutoresizingMaskIntoConstraints = false
         snapshotView.contentMode = .scaleAspectFill
         snapshotView.clipsToBounds = true
-        snapshotView.backgroundColor = .systemBackground
+        snapshotView.backgroundColor = KiwiTheme.canvas
         snapshotView.isHidden = true
 
         restorationSpinner.translatesAutoresizingMaskIntoConstraints = false
@@ -111,11 +123,12 @@ final class BrowserViewController: UIViewController {
 
         progressView.translatesAutoresizingMaskIntoConstraints = false
         progressView.trackTintColor = .clear
-        progressView.tintColor = .systemBlue
+        progressView.tintColor = KiwiTheme.accentDeep
         progressView.isHidden = true
 
         view.addSubview(webContentContainer)
         webContentContainer.addSubview(snapshotView)
+        webContentContainer.addSubview(startPageView)
         webContentContainer.addSubview(restorationSpinner)
         webContentContainer.addSubview(errorView)
         view.addSubview(progressView)
@@ -129,6 +142,11 @@ final class BrowserViewController: UIViewController {
             snapshotView.leadingAnchor.constraint(equalTo: webContentContainer.leadingAnchor),
             snapshotView.trailingAnchor.constraint(equalTo: webContentContainer.trailingAnchor),
             snapshotView.bottomAnchor.constraint(equalTo: webContentContainer.bottomAnchor),
+
+            startPageView.topAnchor.constraint(equalTo: webContentContainer.topAnchor),
+            startPageView.leadingAnchor.constraint(equalTo: webContentContainer.leadingAnchor),
+            startPageView.trailingAnchor.constraint(equalTo: webContentContainer.trailingAnchor),
+            startPageView.bottomAnchor.constraint(equalTo: webContentContainer.bottomAnchor),
 
             restorationSpinner.centerXAnchor.constraint(equalTo: webContentContainer.centerXAnchor),
             restorationSpinner.centerYAnchor.constraint(equalTo: webContentContainer.centerYAnchor),
@@ -146,8 +164,12 @@ final class BrowserViewController: UIViewController {
 
     private func configureToolbar() {
         toolbar.translatesAutoresizingMaskIntoConstraints = false
-        toolbar.backgroundColor = .secondarySystemBackground
-        toolbar.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
+        toolbar.backgroundColor = .clear
+        toolbar.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 10, leading: 12, bottom: 7, trailing: 12)
+
+        toolbarMaterial.translatesAutoresizingMaskIntoConstraints = false
+        toolbarMaterial.isUserInteractionEnabled = false
+        toolbar.addSubview(toolbarMaterial)
 
         configureButton(backButton, imageName: "chevron.backward", label: "Back", action: #selector(goBack))
         configureButton(forwardButton, imageName: "chevron.forward", label: "Forward", action: #selector(goForward))
@@ -159,18 +181,18 @@ final class BrowserViewController: UIViewController {
         )
         extensionActionButton.isHidden = true
         configureButton(tabsButton, imageName: "square.on.square", label: "Show tabs", action: #selector(showTabSwitcher))
-        configureButton(menuButton, imageName: "ellipsis.circle", label: "Browser menu", action: nil)
+        configureButton(menuButton, imageName: "line.3.horizontal", label: "Browser menu", action: nil)
         menuButton.showsMenuAsPrimaryAction = true
 
         addressField.translatesAutoresizingMaskIntoConstraints = false
-        addressField.backgroundColor = .tertiarySystemBackground
-        addressField.layer.cornerRadius = 12
+        addressField.backgroundColor = KiwiTheme.fieldSurface
+        addressField.layer.cornerRadius = 17
         addressField.layer.cornerCurve = .continuous
         addressField.layer.borderColor = UIColor.clear.cgColor
-        addressField.layer.borderWidth = 1
+        addressField.layer.borderWidth = 1.5
         addressField.font = .preferredFont(forTextStyle: .body)
         addressField.adjustsFontForContentSizeCategory = true
-        addressField.placeholder = "Search or enter website"
+        addressField.placeholder = "Search or enter an address"
         addressField.clearButtonMode = .whileEditing
         addressField.autocapitalizationType = .none
         addressField.autocorrectionType = .no
@@ -197,27 +219,31 @@ final class BrowserViewController: UIViewController {
         addressField.rightView = reloadButton
         addressField.rightViewMode = .unlessEditing
 
-        let stack = UIStackView(arrangedSubviews: [
+        let controlsStack = UIStackView(arrangedSubviews: [
             backButton,
             forwardButton,
-            addressField,
             extensionActionButton,
             tabsButton,
             menuButton
         ])
+        controlsStack.axis = .horizontal
+        controlsStack.alignment = .center
+        controlsStack.distribution = .equalCentering
+        controlsStack.spacing = 16
+
+        let stack = UIStackView(arrangedSubviews: [addressField, controlsStack])
         stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.axis = .horizontal
-        stack.alignment = .center
-        stack.spacing = 4
+        stack.axis = .vertical
+        stack.alignment = .fill
+        stack.spacing = 7
         toolbar.addSubview(stack)
         view.addSubview(toolbar)
 
         for button in [backButton, forwardButton, extensionActionButton, tabsButton, menuButton] {
-            button.widthAnchor.constraint(equalToConstant: 42).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 42).isActive = true
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 38).isActive = true
         }
-        addressField.heightAnchor.constraint(equalToConstant: 42).isActive = true
-        addressField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        addressField.heightAnchor.constraint(equalToConstant: 46).isActive = true
 
         NSLayoutConstraint.activate([
             webContentContainer.bottomAnchor.constraint(equalTo: toolbar.topAnchor),
@@ -225,11 +251,34 @@ final class BrowserViewController: UIViewController {
             toolbar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             toolbar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
+            toolbarMaterial.topAnchor.constraint(equalTo: toolbar.topAnchor),
+            toolbarMaterial.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor),
+            toolbarMaterial.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor),
+            toolbarMaterial.bottomAnchor.constraint(equalTo: toolbar.bottomAnchor),
+
             stack.topAnchor.constraint(equalTo: toolbar.layoutMarginsGuide.topAnchor),
             stack.leadingAnchor.constraint(equalTo: toolbar.layoutMarginsGuide.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: toolbar.layoutMarginsGuide.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
+            stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -7)
         ])
+    }
+
+    private func configureStartPage() {
+        startPageView.onSearch = { [weak self] in
+            self?.addressField.becomeFirstResponder()
+        }
+        startPageView.onPrivateTab = { [weak self] in
+            self?.createNewTab(isPrivate: true)
+        }
+        startPageView.onHistory = { [weak self] in
+            self?.showHistory()
+        }
+        startPageView.onDownloads = { [weak self] in
+            self?.showDownloads()
+        }
+        startPageView.onExtensions = {
+            BrowserExtensionNotifications.postPresentManagerRequest()
+        }
     }
 
     private func configureButton(
@@ -240,7 +289,7 @@ final class BrowserViewController: UIViewController {
     ) {
         var configuration = UIButton.Configuration.plain()
         configuration.image = UIImage(systemName: imageName)
-        configuration.baseForegroundColor = .label
+        configuration.baseForegroundColor = KiwiTheme.accentDeep
         configuration.contentInsets = .zero
         button.configuration = configuration
         button.accessibilityLabel = label
@@ -254,6 +303,8 @@ final class BrowserViewController: UIViewController {
         displayedWebView?.removeFromSuperview()
         displayedWebView = nil
         errorView.hide()
+
+        updateStartPage(for: tab)
 
         guard let webView = tab.webView else {
             updateControls()
@@ -337,9 +388,27 @@ final class BrowserViewController: UIViewController {
     private func updatePrivateAppearance(for tab: Tab?) {
         let isPrivate = tab?.isPrivate == true
         addressField.backgroundColor = isPrivate
-            ? UIColor.systemPurple.withAlphaComponent(0.14)
-            : .tertiarySystemBackground
-        addressField.placeholder = isPrivate ? "Private search or address" : "Search or enter website"
+            ? KiwiTheme.privateAccent.withAlphaComponent(0.14)
+            : KiwiTheme.fieldSurface
+        addressField.placeholder = isPrivate ? "Private search or address" : "Search or enter an address"
+        toolbarMaterial.effect = UIBlurEffect(
+            style: isPrivate ? .systemUltraThinMaterialDark : .systemChromeMaterial
+        )
+        startPageView.update(
+            isPrivate: isPrivate,
+            searchEngineName: settingsStore.selectedSearchEngine.name
+        )
+    }
+
+    private func updateStartPage(for tab: Tab?) {
+        let urlText = tab?.url?.absoluteString
+        startPageView.isHidden = !(urlText == nil || urlText == "about:blank")
+        if !startPageView.isHidden {
+            startPageView.update(
+                isPrivate: tab?.isPrivate == true,
+                searchEngineName: settingsStore.selectedSearchEngine.name
+            )
+        }
     }
 
     private func updateProgress(for webView: WKWebView) {
@@ -365,11 +434,11 @@ final class BrowserViewController: UIViewController {
 
         var tabConfiguration = tabsButton.configuration ?? .plain()
         tabConfiguration.title = "\(tabManager.tabs.count)"
-        tabConfiguration.imagePadding = 2
-        tabConfiguration.imagePlacement = .top
+        tabConfiguration.imagePadding = 5
+        tabConfiguration.imagePlacement = .leading
         tabConfiguration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var outgoing = incoming
-            outgoing.font = .systemFont(ofSize: 10, weight: .semibold)
+            outgoing.font = .systemFont(ofSize: 12, weight: .bold)
             return outgoing
         }
         tabsButton.configuration = tabConfiguration
@@ -533,6 +602,9 @@ final class BrowserViewController: UIViewController {
         let history = UIAction(title: "History", image: UIImage(systemName: "clock.arrow.circlepath")) { [weak self] _ in
             self?.showHistory()
         }
+        let downloads = UIAction(title: "Downloads", image: UIImage(systemName: "arrow.down.circle")) { [weak self] _ in
+            self?.showDownloads()
+        }
         let extensions = UIAction(title: "Extensions", image: UIImage(systemName: "puzzlepiece.extension")) { _ in
             BrowserExtensionNotifications.postPresentManagerRequest()
         }
@@ -542,9 +614,7 @@ final class BrowserViewController: UIViewController {
             share,
             openExternal,
             UIMenu(options: .displayInline, children: [newTab, privateTab, close]),
-            history,
-            extensions,
-            settings
+            UIMenu(options: .displayInline, children: [history, downloads, extensions, settings])
         ]
 
         #if DEBUG
@@ -638,6 +708,13 @@ final class BrowserViewController: UIViewController {
         present(navigation, animated: true)
     }
 
+    private func showDownloads() {
+        let downloads = DownloadsViewController(coordinator: downloadCoordinator)
+        let navigation = UINavigationController(rootViewController: downloads)
+        navigation.modalPresentationStyle = .formSheet
+        present(navigation, animated: true)
+    }
+
     #if DEBUG
     private func showDebugInfo() {
         let controller = DebugInfoViewController { [weak self] in
@@ -676,6 +753,10 @@ final class BrowserViewController: UIViewController {
         _ = tabManager.createTab(url: url, isPrivate: false, select: activate)
     }
 
+    @objc private func handleSettingsChange() {
+        updatePrivateAppearance(for: tabManager.selectedTab)
+    }
+
     private func showNavigationError(_ error: Error, for tab: Tab) {
         guard tab.id == tabManager.selectedTabID else { return }
         hideRestorationOverlay(animated: false)
@@ -711,7 +792,7 @@ final class BrowserViewController: UIViewController {
 extension BrowserViewController: UITextFieldDelegate {
     func textFieldDidBeginEditing(_ textField: UITextField) {
         UIView.animate(withDuration: 0.15) {
-            textField.layer.borderColor = UIColor.systemBlue.cgColor
+            textField.layer.borderColor = KiwiTheme.accentDeep.cgColor
             textField.backgroundColor = .systemBackground
         }
         DispatchQueue.main.async {
@@ -754,6 +835,7 @@ extension BrowserViewController: TabManagerDelegate {
 
     func tabManager(_ manager: TabManager, didUpdate tab: Tab) {
         guard tab.id == manager.selectedTabID else { return }
+        updateStartPage(for: tab)
         updateAddress(for: tab)
         updatePrivateAppearance(for: tab)
         updateControls()
@@ -819,6 +901,7 @@ extension BrowserViewController: WKNavigationDelegate {
         tabManager.updateTab(id: tab.id, url: webView.url)
         if tab.id == tabManager.selectedTabID {
             errorView.hide()
+            updateStartPage(for: tab)
         }
     }
 
@@ -903,12 +986,38 @@ extension BrowserViewController: WKNavigationDelegate {
         let scheme = url.scheme?.lowercased() ?? ""
         let internallySupportedSchemes = ["http", "https", "about", "file", "data", "blob"]
         guard !internallySupportedSchemes.contains(scheme) else {
-            decisionHandler(.allow)
+            decisionHandler(navigationAction.shouldPerformDownload ? .download : .allow)
             return
         }
 
         decisionHandler(.cancel)
         UIApplication.shared.open(url)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationResponse: WKNavigationResponse,
+        decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+    ) {
+        decisionHandler(navigationResponse.canShowMIMEType ? .allow : .download)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        navigationAction: WKNavigationAction,
+        didBecome download: WKDownload
+    ) {
+        let isPrivate = tabManager.tab(containing: webView)?.isPrivate ?? false
+        downloadCoordinator.adopt(download, isPrivate: isPrivate)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        navigationResponse: WKNavigationResponse,
+        didBecome download: WKDownload
+    ) {
+        let isPrivate = tabManager.tab(containing: webView)?.isPrivate ?? false
+        downloadCoordinator.adopt(download, isPrivate: isPrivate)
     }
 
     private func handleNavigationFailure(_ error: Error, webView: WKWebView) {

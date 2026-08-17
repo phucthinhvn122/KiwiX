@@ -7,12 +7,12 @@ BUNDLE_IDENTIFIER ?= com.phucthinhvn122.KiwiX
 RESULT_BUNDLE_PATH ?= build/Benchmarks.xcresult
 TEST_RESULT_BUNDLE_PATH ?= build/Tests.xcresult
 
-.PHONY: generate build test ipa bench private-api clean
+.PHONY: generate build test ipa bench private-api ad-free clean
 
 generate:
 	xcodegen generate --spec project.yml
 
-build: generate private-api
+build: generate private-api ad-free
 	xcodebuild \
 		-project "$(PROJECT)" \
 		-scheme "$(SCHEME)" \
@@ -51,6 +51,9 @@ bench: generate private-api
 
 private-api:
 	bash scripts/check_private_api.sh --source .
+
+ad-free:
+	bash scripts/check_ad_sdks.sh .
 
 clean:
 	xcodebuild -project "$(PROJECT)" -scheme "$(SCHEME)" clean || true

@@ -10,15 +10,15 @@ final class BrowserErrorView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         translatesAutoresizingMaskIntoConstraints = false
-        backgroundColor = .systemBackground
+        backgroundColor = KiwiTheme.canvas
         isHidden = true
 
         let icon = UIImageView(image: UIImage(systemName: "wifi.exclamationmark"))
-        icon.tintColor = .secondaryLabel
-        icon.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 34, weight: .regular)
+        icon.tintColor = KiwiTheme.accentDeep
+        icon.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 44, weight: .medium)
 
         titleLabel.text = "Page Not Available"
-        titleLabel.font = .preferredFont(forTextStyle: .title2)
+        titleLabel.font = .systemFont(ofSize: 27, weight: .bold)
         titleLabel.adjustsFontForContentSizeCategory = true
         titleLabel.textAlignment = .center
 
@@ -32,6 +32,9 @@ final class BrowserErrorView: UIView {
         configuration.title = "Try Again"
         configuration.image = UIImage(systemName: "arrow.clockwise")
         configuration.imagePadding = 7
+        configuration.baseBackgroundColor = KiwiTheme.accentDeep
+        configuration.cornerStyle = .large
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 20, bottom: 12, trailing: 20)
         retryButton.configuration = configuration
         retryButton.addAction(UIAction { [weak self] _ in self?.retryHandler?() }, for: .touchUpInside)
 

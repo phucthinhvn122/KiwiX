@@ -21,6 +21,8 @@ final class HistoryViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        tableView.backgroundColor = KiwiTheme.canvas
+        navigationItem.largeTitleDisplayMode = .always
         navigationItem.leftBarButtonItem = UIBarButtonItem(
             barButtonSystemItem: .done,
             target: self,
@@ -51,7 +53,8 @@ final class HistoryViewController: UITableViewController {
         content.text = entry.title
         content.secondaryText = "\(entry.url.host ?? entry.url.absoluteString) · \(relativeDateFormatter.localizedString(for: entry.visitedAt, relativeTo: Date()))"
         content.secondaryTextProperties.numberOfLines = 2
-        content.image = UIImage(systemName: "globe")
+        content.image = UIImage(systemName: "clock.fill")
+        content.imageProperties.tintColor = KiwiTheme.accentDeep
         cell.contentConfiguration = content
         cell.accessoryType = .disclosureIndicator
         return cell
@@ -61,6 +64,33 @@ final class HistoryViewController: UITableViewController {
         tableView.deselectRow(at: indexPath, animated: true)
         onOpen(entries[indexPath.row].url)
         dismiss(animated: true)
+    }
+
+    override func tableView(
+        _ tableView: UITableView,
+        trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
+    ) -> UISwipeActionsConfiguration? {
+        let entry = entries[indexPath.row]
+        let delete = UIContextualAction(style: .destructive, title: "Delete") { [weak self] _, _, completion in
+            guard let self else {
+                completion(false)
+                return
+            }
+            Task {
+                do {
+                    try await self.store.remove(id: entry.id)
+                    self.entries.removeAll { $0.id == entry.id }
+                    self.tableView.reloadData()
+                    self.navigationItem.rightBarButtonItem?.isEnabled = !self.entries.isEmpty
+                    self.updateEmptyState()
+                    completion(true)
+                } catch {
+                    completion(false)
+                }
+            }
+        }
+        delete.image = UIImage(systemName: "trash")
+        return UISwipeActionsConfiguration(actions: [delete])
     }
 
     @objc private func reload() {
@@ -105,15 +135,14 @@ final class HistoryViewController: UITableViewController {
 
     private func updateEmptyState() {
         guard entries.isEmpty else {
-            tableView.backgroundView = nil
+            contentUnavailableConfiguration = nil
             return
         }
-        let label = UILabel()
-        label.text = "No History"
-        label.textColor = .secondaryLabel
-        label.font = .preferredFont(forTextStyle: .headline)
-        label.textAlignment = .center
-        tableView.backgroundView = label
+        contentUnavailableConfiguration = KiwiTheme.emptyConfiguration(
+            title: "No History Yet",
+            message: "Pages you visit in regular tabs will appear here. Private tabs are never saved.",
+            systemImage: "clock.arrow.circlepath"
+        )
     }
 
     @objc private func close() {

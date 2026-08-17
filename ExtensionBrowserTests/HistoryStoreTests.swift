@@ -41,4 +41,21 @@ final class HistoryStoreTests: XCTestCase {
         let entries = try await store.entries()
         XCTAssertTrue(entries.isEmpty)
     }
+
+    func testRemovesOnlySelectedHistoryEntry() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HistoryStoreTests-\(UUID().uuidString)", isDirectory: true)
+        let fileURL = directory.appendingPathComponent("History.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = HistoryStore(fileURL: fileURL)
+
+        try await store.recordVisit(url: URL(string: "https://one.example")!, title: "One")
+        try await store.recordVisit(url: URL(string: "https://two.example")!, title: "Two")
+        let entries = try await store.entries()
+
+        try await store.remove(id: entries[0].id)
+
+        let remaining = try await store.entries()
+        XCTAssertEqual(remaining.map(\.title), ["One"])
+    }
 }

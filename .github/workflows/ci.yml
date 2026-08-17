@@ -85,6 +85,9 @@ jobs:
       - name: Check source for private API
         run: make private-api
 
+      - name: Verify no advertising SDKs are present
+        run: make ad-free
+
       - name: Run tests
         env:
           DESTINATION: platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}

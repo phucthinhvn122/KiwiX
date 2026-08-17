@@ -46,6 +46,18 @@ actor HistoryStore {
         try fileManager.removeItem(at: fileURL)
     }
 
+    func remove(id: UUID) throws {
+        var current = try loadEntries()
+        let previousCount = current.count
+        current.removeAll { $0.id == id }
+        guard current.count != previousCount else { return }
+        if current.isEmpty {
+            try clear()
+        } else {
+            try saveEntries(current)
+        }
+    }
+
     private func loadEntries() throws -> [HistoryEntry] {
         let fileURL = try historyFileURL(createDirectory: false)
         guard fileManager.fileExists(atPath: fileURL.path) else { return [] }

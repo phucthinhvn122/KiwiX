@@ -21,7 +21,7 @@ extension.zip -> validate -> preview quyền -> install/enable
 flowchart TD
     App["App bootstrap / Scene"] --> Browser["BrowserCore (UIKit + WKWebView)"]
     Browser --> Tabs["Tabs (manager, lifecycle, snapshots, session)"]
-    Browser --> Features["Settings + History + planned Downloads"]
+    Browser --> Features["Settings + History + Downloads"]
     Browser --> Boundary["BrowserExtensionIntegration boundary"]
     Boundary --> Runtime["ExtensionKit Runtime"]
     UI["ExtensionUI (picker, preview, manager)"] --> Installer["Installer + Manifest validator"]
@@ -50,7 +50,7 @@ Dependency direction quan trọng: browser không phụ thuộc trực tiếp v�
 | `ExtensionUI` | Files picker, install preview, list/details/toggle/remove | ZIP extraction trên main actor |
 | `Settings` | Search engine built-in/custom và debug UI | Browser rendering core |
 | `History` | Actor store JSON + UIKit list/clear/open; chỉ record tab thường | Extension hoặc private-tab state |
-| `Downloads` (planned) | Boundary cho download feature về sau; chưa implement trong MVP | Không được mô tả như feature đã ship |
+| `Downloads` | `WKDownload` coordinator, progress, metadata store và file preview/delete | Private download không persist metadata; destination phải nằm trực tiếp trong Downloads directory |
 | `Shared` | Logging, signposts, diagnostics, integration protocols | Feature business logic lớn |
 
 ## Browser core và WKWebView
@@ -232,7 +232,7 @@ GitHub Actions `xcodebuild test` trên iPhone Simulator là compile/test authori
 6. Private mode cố ý disable extension; UI opt-in riêng chỉ nên thêm sau audit.
 7. Signing phụ thuộc external Apple assets/profile/registered devices. Unsigned IPA chỉ là input cho re-sign, không phải artifact cài trực tiếp.
 8. Không thể compile iOS trên Windows; lần chạy CI macOS đầu tiên vẫn là bước xác nhận bắt buộc.
-9. History đã có store/UI; Downloads chưa được implement. Favicon mới chỉ có candidate URL, chưa fetch/render.
+9. History đã có store/UI; Downloads đã dùng `WKDownload` và màn hình quản lý file. Favicon mới chỉ có candidate URL, chưa fetch/render.
 
 ## Điều kiện mở rộng sau MVP
 

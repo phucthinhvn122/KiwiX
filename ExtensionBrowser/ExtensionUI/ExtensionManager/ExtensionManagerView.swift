@@ -56,10 +56,11 @@ struct ExtensionManagerView: View {
                 if viewModel.isWorking {
                     ProgressView("Validating Extension…")
                         .padding()
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
                 }
             }
         }
+        .tint(Color(uiColor: KiwiTheme.accentDeep))
         .task { viewModel.refresh() }
         .fileImporter(
             isPresented: $showsImporter,
@@ -161,9 +162,9 @@ private struct ExtensionIconView: View {
             } else {
                 Image(systemName: "puzzlepiece.extension.fill")
                     .font(.title2)
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(Color(uiColor: KiwiTheme.accentDeep))
                     .padding(7)
-                    .background(Color.blue.opacity(0.12))
+                    .background(Color(uiColor: KiwiTheme.accent).opacity(0.14))
             }
         }
         .frame(width: 38, height: 38)

@@ -46,9 +46,10 @@ jobs:
         id: simulator
         run: |
           set -euo pipefail
-          udid="$(xcrun simctl list devices available --json | /usr/bin/python3 scripts/ci/select-simulator.py)"
+          sdk_version="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          udid="$(xcrun simctl list devices available --json | /usr/bin/python3 scripts/ci/select-simulator.py --maximum-runtime "${sdk_version}")"
           echo "udid=${udid}" >> "${GITHUB_OUTPUT}"
-          echo "Selected simulator: ${udid}"
+          echo "Selected simulator: ${udid} (maximum runtime ${sdk_version})"
 
       - name: Check source for private API
         run: make private-api

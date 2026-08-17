@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
@@ -26,12 +27,23 @@ def runtime_version(runtime: str) -> tuple[int, ...]:
     return tuple(int(part) for part in re.split(r"[-.]", match.group(1)))
 
 
-def select_device(payload: dict[str, Any]) -> dict[str, Any]:
+def parse_version(value: str) -> tuple[int, ...]:
+    if not re.fullmatch(r"\d+(?:\.\d+)*", value):
+        raise ValueError(f"invalid runtime version: {value}")
+    return tuple(int(part) for part in value.split("."))
+
+
+def select_device(
+    payload: dict[str, Any],
+    maximum_runtime: tuple[int, ...] | None = None,
+) -> dict[str, Any]:
     candidates: list[tuple[tuple[int, ...], int, dict[str, Any]]] = []
 
     for runtime, devices in payload.get("devices", {}).items():
         version = runtime_version(runtime)
         if not version:
+            continue
+        if maximum_runtime is not None and version > maximum_runtime:
             continue
         for device in devices:
             name = str(device.get("name", ""))
@@ -52,14 +64,21 @@ def select_device(payload: dict[str, Any]) -> dict[str, Any]:
 
 def main() -> int:
     try:
+        parser = argparse.ArgumentParser()
+        parser.add_argument(
+            "--maximum-runtime",
+            type=parse_version,
+            help="Highest iOS runtime compatible with the selected Xcode SDK (for example 18.5)",
+        )
+        arguments = parser.parse_args()
         payload = json.load(sys.stdin)
-        device = select_device(payload)
+        device = select_device(payload, maximum_runtime=arguments.maximum_runtime)
         udid = device.get("udid")
         if not udid:
             raise RuntimeError("Selected simulator has no UDID")
         print(udid)
         return 0
-    except (json.JSONDecodeError, RuntimeError, TypeError) as error:
+    except (json.JSONDecodeError, RuntimeError, TypeError, ValueError) as error:
         print(f"simulator selection failed: {error}", file=sys.stderr)
         return 1
 

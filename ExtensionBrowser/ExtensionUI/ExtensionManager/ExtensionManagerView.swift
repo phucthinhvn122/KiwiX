@@ -6,6 +6,7 @@ import ImageIO
 struct ExtensionManagerView: View {
     @StateObject private var viewModel: ExtensionManagerViewModel
     @State private var showsImporter = false
+    @State private var isDropTargeted = false
     @State private var detailExtension: InstalledExtension?
     @State private var pendingRemoval: InstalledExtension?
     @Environment(\.dismiss) private var dismiss
@@ -22,20 +23,43 @@ struct ExtensionManagerView: View {
             Group {
                 if viewModel.extensions.isEmpty && !viewModel.isWorking {
                     ContentUnavailableView(
-                        "No Extensions",
-                        systemImage: "puzzlepiece.extension",
-                        description: Text("Import a Manifest V3 extension packaged as a ZIP file.")
+                        label: {
+                            Label("No Extensions", systemImage: "puzzlepiece.extension")
+                        },
+                        description: {
+                            Text("Choose a ZIP containing one Manifest V3 extension and its manifest.json file.")
+                        },
+                        actions: {
+                            Button { showsImporter = true } label: {
+                                Label("Import Extension from Files", systemImage: "folder.badge.plus")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.large)
+                        }
                     )
                 } else {
-                    List(viewModel.extensions) { item in
-                        extensionRow(item)
-                            .contentShape(Rectangle())
-                            .onTapGesture { detailExtension = item }
-                            .swipeActions {
-                                Button(role: .destructive) { pendingRemoval = item } label: {
-                                    Label("Remove", systemImage: "trash")
-                                }
+                    List {
+                        Section {
+                            Button { showsImporter = true } label: {
+                                Label("Import Extension from Files", systemImage: "folder.badge.plus")
                             }
+                            .disabled(viewModel.isWorking)
+                        } footer: {
+                            Text("Select a .zip package containing manifest.json.")
+                        }
+
+                        Section("Installed") {
+                            ForEach(viewModel.extensions) { item in
+                                extensionRow(item)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture { detailExtension = item }
+                                    .swipeActions {
+                                        Button(role: .destructive) { pendingRemoval = item } label: {
+                                            Label("Remove", systemImage: "trash")
+                                        }
+                                    }
+                            }
+                        }
                     }
                     .listStyle(.insetGrouped)
                 }
@@ -61,6 +85,24 @@ struct ExtensionManagerView: View {
             }
         }
         .tint(Color(uiColor: KiwiTheme.accentDeep))
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 22)
+                    .strokeBorder(Color(uiColor: KiwiTheme.accentDeep), style: StrokeStyle(lineWidth: 3, dash: [8]))
+                    .padding(12)
+                    .allowsHitTesting(false)
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let archive = urls.first(where: { $0.pathExtension.lowercased() == "zip" }) else {
+                viewModel.errorMessage = "Drop a .zip extension package."
+                return false
+            }
+            viewModel.prepareImport(from: archive)
+            return true
+        } isTargeted: { isTargeted in
+            isDropTargeted = isTargeted
+        }
         .task { viewModel.refresh() }
         .fileImporter(
             isPresented: $showsImporter,

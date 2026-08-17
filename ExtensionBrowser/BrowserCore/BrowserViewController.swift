@@ -183,6 +183,7 @@ final class BrowserViewController: UIViewController {
         addressField.backgroundColor = KiwiTheme.fieldSurface
         addressField.layer.cornerRadius = 17
         addressField.layer.cornerCurve = .continuous
+        addressField.clipsToBounds = true
         addressField.layer.borderColor = UIColor.clear.cgColor
         addressField.layer.borderWidth = 1.5
         addressField.font = .systemFont(ofSize: 16, weight: .regular)
@@ -200,18 +201,35 @@ final class BrowserViewController: UIViewController {
         addressField.delegate = self
         addressField.accessibilityLabel = "Address and search"
 
+        addressIconView.translatesAutoresizingMaskIntoConstraints = false
         addressIconView.image = UIImage(systemName: "magnifyingglass")
         addressIconView.tintColor = .secondaryLabel
-        addressIconView.contentMode = .center
-        addressIconView.frame = CGRect(x: 0, y: 0, width: 34, height: 34)
-        addressField.leftView = addressIconView
+        addressIconView.contentMode = .scaleAspectFit
+        addressIconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)
+        let addressIconContainer = UIView(frame: CGRect(x: 0, y: 0, width: 46, height: 42))
+        addressIconContainer.addSubview(addressIconView)
+        NSLayoutConstraint.activate([
+            addressIconView.leadingAnchor.constraint(equalTo: addressIconContainer.leadingAnchor, constant: 14),
+            addressIconView.centerYAnchor.constraint(equalTo: addressIconContainer.centerYAnchor),
+            addressIconView.widthAnchor.constraint(equalToConstant: 20),
+            addressIconView.heightAnchor.constraint(equalToConstant: 20)
+        ])
+        addressField.leftView = addressIconContainer
         addressField.leftViewMode = .always
 
-        reloadButton.frame = CGRect(x: 0, y: 0, width: 38, height: 34)
+        reloadButton.translatesAutoresizingMaskIntoConstraints = false
         reloadButton.tintColor = .secondaryLabel
         reloadButton.accessibilityLabel = "Reload"
         reloadButton.addTarget(self, action: #selector(reloadOrStop), for: .touchUpInside)
-        addressField.rightView = reloadButton
+        let reloadContainer = UIView(frame: CGRect(x: 0, y: 0, width: 44, height: 42))
+        reloadContainer.addSubview(reloadButton)
+        NSLayoutConstraint.activate([
+            reloadButton.centerXAnchor.constraint(equalTo: reloadContainer.centerXAnchor),
+            reloadButton.centerYAnchor.constraint(equalTo: reloadContainer.centerYAnchor),
+            reloadButton.widthAnchor.constraint(equalToConstant: 36),
+            reloadButton.heightAnchor.constraint(equalToConstant: 36)
+        ])
+        addressField.rightView = reloadContainer
         addressField.rightViewMode = .unlessEditing
 
         [backButton, forwardButton, newTabButton, tabsButton, menuButton].forEach {

@@ -59,8 +59,8 @@ actor TabSnapshotStore {
 final class TabSnapshotManager {
     private let store: TabSnapshotStore
 
-    init(store: TabSnapshotStore = TabSnapshotStore()) {
-        self.store = store
+    init(store: TabSnapshotStore? = nil) {
+        self.store = store ?? TabSnapshotStore()
     }
 
     @discardableResult

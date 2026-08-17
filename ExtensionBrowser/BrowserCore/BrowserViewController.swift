@@ -30,15 +30,15 @@ final class BrowserViewController: UIViewController {
     private var extensionActionRefreshGeneration = 0
 
     init(
-        tabManager: TabManager = TabManager(),
-        settingsStore: BrowserSettingsStore = .shared,
-        extensionBridge: BrowserExtensionBridge = .shared,
-        historyStore: HistoryStore = HistoryStore()
+        tabManager: TabManager? = nil,
+        settingsStore: BrowserSettingsStore? = nil,
+        extensionBridge: BrowserExtensionBridge? = nil,
+        historyStore: HistoryStore? = nil
     ) {
-        self.tabManager = tabManager
-        self.settingsStore = settingsStore
-        self.extensionBridge = extensionBridge
-        self.historyStore = historyStore
+        self.tabManager = tabManager ?? TabManager()
+        self.settingsStore = settingsStore ?? .shared
+        self.extensionBridge = extensionBridge ?? .shared
+        self.historyStore = historyStore ?? HistoryStore()
         super.init(nibName: nil, bundle: nil)
     }
 

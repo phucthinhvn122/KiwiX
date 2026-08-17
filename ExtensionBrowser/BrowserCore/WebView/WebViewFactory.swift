@@ -9,8 +9,8 @@ final class WebViewConfigurationProvider {
     private let privateDataStore = WKWebsiteDataStore.nonPersistent()
     private let extensionBridge: BrowserExtensionBridge
 
-    init(extensionBridge: BrowserExtensionBridge = .shared) {
-        self.extensionBridge = extensionBridge
+    init(extensionBridge: BrowserExtensionBridge? = nil) {
+        self.extensionBridge = extensionBridge ?? .shared
     }
 
     func configuration(tabID: UUID, isPrivate: Bool) -> WKWebViewConfiguration {
@@ -40,8 +40,8 @@ final class WebViewConfigurationProvider {
 final class WebViewFactory {
     private let configurationProvider: WebViewConfigurationProvider
 
-    init(configurationProvider: WebViewConfigurationProvider = WebViewConfigurationProvider()) {
-        self.configurationProvider = configurationProvider
+    init(configurationProvider: WebViewConfigurationProvider? = nil) {
+        self.configurationProvider = configurationProvider ?? WebViewConfigurationProvider()
     }
 
     func makeWebView(tabID: UUID, isPrivate: Bool) -> WKWebView {

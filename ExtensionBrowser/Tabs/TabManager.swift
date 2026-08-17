@@ -36,14 +36,14 @@ final class TabManager {
     private var lifecycleGeneration = 0
 
     init(
-        webViewFactory: WebViewFactory = WebViewFactory(),
-        store: TabStore = TabStore(),
-        snapshotManager: TabSnapshotManager = TabSnapshotManager(),
+        webViewFactory: WebViewFactory? = nil,
+        store: TabStore? = nil,
+        snapshotManager: TabSnapshotManager? = nil,
         maximumWarmTabs: Int = 3
     ) {
-        self.webViewFactory = webViewFactory
-        self.store = store
-        self.snapshotManager = snapshotManager
+        self.webViewFactory = webViewFactory ?? WebViewFactory()
+        self.store = store ?? TabStore()
+        self.snapshotManager = snapshotManager ?? TabSnapshotManager()
         lifecyclePolicy = TabLifecycleManager(maximumWarmTabs: maximumWarmTabs)
     }
 

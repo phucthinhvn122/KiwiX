@@ -201,13 +201,13 @@ Chỉ chuyển sang M0 khi tất cả điều kiện sau đúng:
 
 - [x] Chủ dự án phê duyệt Path A và min iOS 18.4.
 - [x] Chọn Apple Developer Program làm kênh chính; AltStore/SideStore là fallback.
-- [ ] Có macOS/Xcode qua máy local hoặc GitHub remote/Actions để compile SDK thật.
+- [x] macOS/Xcode qua GitHub Actions tại repository private của dự án.
 - [ ] Harness chạy xanh trên simulator iOS 18.4+ và report được lưu làm artifact.
 - [x] Thiết bị nghiệm thu: iPhone XS, iOS 18.7.9.
 - [x] `RISKS.md` được chấp nhận làm risk register ban đầu; cập nhật theo milestone.
 
 ## 7. Câu hỏi cần chủ dự án quyết
 
-1. GitHub remote sẽ được tạo dưới tài khoản CLI hiện hành và ghi lại sau khi push đầu tiên.
+1. GitHub remote private đã tạo: <https://github.com/phucthinhvn122/KiwiX>.
 2. Certificate `.p12` và provisioning profile của Apple Developer Program vẫn phải được chủ tài khoản
    Apple cấp qua GitHub Actions secrets; không thể tự sinh hợp lệ chỉ từ repository.

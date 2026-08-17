@@ -166,7 +166,7 @@ final class BrowserViewController: UIViewController {
     private func configureToolbar() {
         toolbar.translatesAutoresizingMaskIntoConstraints = false
         toolbar.backgroundColor = .clear
-        toolbar.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 10, leading: 12, bottom: 7, trailing: 12)
+        toolbar.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 6, leading: 12, bottom: 2, trailing: 12)
 
         toolbarMaterial.translatesAutoresizingMaskIntoConstraints = false
         toolbarMaterial.isUserInteractionEnabled = false
@@ -185,8 +185,8 @@ final class BrowserViewController: UIViewController {
         addressField.layer.cornerCurve = .continuous
         addressField.layer.borderColor = UIColor.clear.cgColor
         addressField.layer.borderWidth = 1.5
-        addressField.font = .preferredFont(forTextStyle: .body)
-        addressField.adjustsFontForContentSizeCategory = true
+        addressField.font = .systemFont(ofSize: 16, weight: .regular)
+        addressField.adjustsFontForContentSizeCategory = false
         addressField.placeholder = "Search or enter an address"
         addressField.clearButtonMode = .whileEditing
         addressField.autocapitalizationType = .none
@@ -220,21 +220,21 @@ final class BrowserViewController: UIViewController {
         controlsStack.axis = .horizontal
         controlsStack.alignment = .center
         controlsStack.distribution = .equalCentering
-        controlsStack.spacing = 16
+        controlsStack.spacing = 12
 
         let stack = UIStackView(arrangedSubviews: [addressField, controlsStack])
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .vertical
         stack.alignment = .fill
-        stack.spacing = 7
+        stack.spacing = 2
         toolbar.addSubview(stack)
         view.addSubview(toolbar)
 
         for button in [backButton, forwardButton, newTabButton, tabsButton, menuButton] {
-            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 38).isActive = true
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 34).isActive = true
         }
-        addressField.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        addressField.heightAnchor.constraint(equalToConstant: 42).isActive = true
 
         view.keyboardLayoutGuide.followsUndockedKeyboard = true
 
@@ -252,14 +252,11 @@ final class BrowserViewController: UIViewController {
             stack.topAnchor.constraint(equalTo: toolbar.layoutMarginsGuide.topAnchor),
             stack.leadingAnchor.constraint(equalTo: toolbar.layoutMarginsGuide.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: toolbar.layoutMarginsGuide.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -7)
+            stack.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -3)
         ])
     }
 
     private func configureStartPage() {
-        startPageView.onSearch = { [weak self] in
-            self?.addressField.becomeFirstResponder()
-        }
         startPageView.onPrivateTab = { [weak self] in
             self?.createNewTab(isPrivate: true)
         }
@@ -423,6 +420,10 @@ final class BrowserViewController: UIViewController {
         let webView = displayedWebView
         backButton.isEnabled = webView?.canGoBack == true
         forwardButton.isEnabled = webView?.canGoForward == true
+
+        let hasPage = tabManager.selectedTab?.url.map { $0.absoluteString != "about:blank" } ?? false
+        reloadButton.isEnabled = hasPage
+        addressField.rightViewMode = hasPage && !addressField.isFirstResponder ? .always : .never
 
         let isLoading = webView?.isLoading == true
         reloadButton.setImage(
@@ -776,6 +777,7 @@ final class BrowserViewController: UIViewController {
 
 extension BrowserViewController: UITextFieldDelegate {
     func textFieldDidBeginEditing(_ textField: UITextField) {
+        textField.rightViewMode = .never
         if let url = tabManager.selectedTab?.url,
            url.absoluteString != "about:blank" {
             textField.text = url.absoluteString
@@ -801,6 +803,7 @@ extension BrowserViewController: UITextFieldDelegate {
         if let tab = tabManager.selectedTab {
             updateAddress(for: tab)
         }
+        updateControls()
     }
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {

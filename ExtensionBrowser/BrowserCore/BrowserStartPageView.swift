@@ -2,7 +2,6 @@ import UIKit
 
 @MainActor
 final class BrowserStartPageView: UIView {
-    var onSearch: (() -> Void)?
     var onPrivateTab: (() -> Void)?
     var onHistory: (() -> Void)?
     var onDownloads: (() -> Void)?
@@ -14,7 +13,6 @@ final class BrowserStartPageView: UIView {
     private let logoImageView = UIImageView()
     private let titleLabel = UILabel()
     private let subtitleLabel = UILabel()
-    private let searchButton = UIButton(type: .system)
     private let privateButton = BrowserStartPageView.makeActionButton(title: "Private", imageName: "hand.raised.fill")
     private let historyButton = BrowserStartPageView.makeActionButton(title: "History", imageName: "clock.arrow.circlepath")
     private let downloadsButton = BrowserStartPageView.makeActionButton(title: "Downloads", imageName: "arrow.down.circle.fill")
@@ -34,15 +32,8 @@ final class BrowserStartPageView: UIView {
 
     func update(isPrivate: Bool, searchEngineName: String) {
         subtitleLabel.text = isPrivate
-            ? "Pages in this tab won't appear in history."
-            : "Fast browsing with Google search."
-
-        var configuration = searchButton.configuration ?? .filled()
-        configuration.title = isPrivate
-            ? "Private search or type a URL"
-            : "Search \(searchEngineName) or type a URL"
-        configuration.baseForegroundColor = .label
-        searchButton.configuration = configuration
+            ? "Use the address bar below for private browsing."
+            : "Search \(searchEngineName) or enter a website below."
 
         logoContainer.backgroundColor = (isPrivate ? KiwiTheme.privateAccent : KiwiTheme.accent)
             .withAlphaComponent(0.15)
@@ -80,22 +71,6 @@ final class BrowserStartPageView: UIView {
         subtitleLabel.numberOfLines = 2
         subtitleLabel.textAlignment = .center
 
-        var searchConfiguration = UIButton.Configuration.filled()
-        searchConfiguration.image = UIImage(systemName: "magnifyingglass")
-        searchConfiguration.imagePadding = 12
-        searchConfiguration.cornerStyle = .capsule
-        searchConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 18, bottom: 14, trailing: 18)
-        searchConfiguration.baseBackgroundColor = KiwiTheme.elevatedSurface
-        searchConfiguration.baseForegroundColor = .label
-        searchButton.configuration = searchConfiguration
-        searchButton.contentHorizontalAlignment = .leading
-        searchButton.layer.shadowColor = UIColor.black.cgColor
-        searchButton.layer.shadowOpacity = 0.08
-        searchButton.layer.shadowRadius = 12
-        searchButton.layer.shadowOffset = CGSize(width: 0, height: 4)
-        searchButton.accessibilityHint = "Focuses the address and search field"
-        searchButton.addAction(UIAction { [weak self] _ in self?.onSearch?() }, for: .touchUpInside)
-
         privateButton.addAction(UIAction { [weak self] _ in self?.onPrivateTab?() }, for: .touchUpInside)
         historyButton.addAction(UIAction { [weak self] _ in self?.onHistory?() }, for: .touchUpInside)
         downloadsButton.addAction(UIAction { [weak self] _ in self?.onDownloads?() }, for: .touchUpInside)
@@ -121,8 +96,6 @@ final class BrowserStartPageView: UIView {
 
         contentStack.addArrangedSubview(brandStack)
         contentStack.setCustomSpacing(24, after: brandStack)
-        contentStack.addArrangedSubview(searchButton)
-        contentStack.setCustomSpacing(20, after: searchButton)
         contentStack.addArrangedSubview(actionsStack)
 
         addSubview(scrollView)
@@ -152,7 +125,6 @@ final class BrowserStartPageView: UIView {
             logoContainer.heightAnchor.constraint(equalToConstant: 64),
             logoImageView.centerXAnchor.constraint(equalTo: logoContainer.centerXAnchor),
             logoImageView.centerYAnchor.constraint(equalTo: logoContainer.centerYAnchor),
-            searchButton.heightAnchor.constraint(equalToConstant: 54),
             privateButton.heightAnchor.constraint(equalToConstant: 72),
             historyButton.heightAnchor.constraint(equalToConstant: 72),
             downloadsButton.heightAnchor.constraint(equalToConstant: 72),

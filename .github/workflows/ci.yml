@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-package:
+    name: Build, test, benchmark, and package
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      PROJECT: ExtensionBrowser.xcodeproj
+      SCHEME: ExtensionBrowser
+      BUNDLE_IDENTIFIER: com.phucthinhvn122.KiwiX
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Report Apple toolchain
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Install pinned XcodeGen
+        run: bash scripts/ci/install-xcodegen.sh
+
+      - name: Generate project
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec project.yml
+          xcodebuild -project "${PROJECT}" -list
+
+      - name: Select iPhone Simulator
+        id: simulator
+        run: |
+          set -euo pipefail
+          udid="$(xcrun simctl list devices available --json | /usr/bin/python3 scripts/ci/select-simulator.py)"
+          echo "udid=${udid}" >> "${GITHUB_OUTPUT}"
+          echo "Selected simulator: ${udid}"
+
+      - name: Check source for private API
+        run: make private-api
+
+      - name: Run tests
+        env:
+          DESTINATION: platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}
+        run: make test DESTINATION="${DESTINATION}"
+
+      - name: Build release Simulator app
+        run: make build CONFIGURATION=Release DESTINATION="generic/platform=iOS Simulator" DERIVED_DATA="build/simulator"
+
+      - name: Check built binary for private API
+        run: bash scripts/check_private_api.sh --binary "build/simulator/Build/Products/Release-iphonesimulator/ExtensionBrowser.app/ExtensionBrowser"
+
+      - name: Run M0 benchmark
+        env:
+          DESTINATION: platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}
+        run: make bench DESTINATION="${DESTINATION}" RESULT_BUNDLE_PATH="build/Benchmarks.xcresult"
+
+      - name: Package unsigned IPA
+        run: make ipa
+
+      - name: Package Simulator app
+        run: |
+          set -euo pipefail
+          app_path="build/simulator/Build/Products/Release-iphonesimulator/ExtensionBrowser.app"
+          mkdir -p artifacts/simulator
+          ditto -c -k --sequesterRsrc --keepParent "${app_path}" artifacts/simulator/ExtensionBrowser-Simulator.zip
+          unzip -t artifacts/simulator/ExtensionBrowser-Simulator.zip
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: KiwiX-${{ github.sha }}
+          path: |
+            artifacts/simulator/ExtensionBrowser-Simulator.zip
+            artifacts/ipa/ExtensionBrowser-Unsigned.ipa
+            build/Benchmarks.xcresult
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload diagnostics on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: KiwiX-Diagnostics-${{ github.sha }}
+          path: |
+            build/**/*.xcresult
+            build/**/*.log
+          if-no-files-found: warn
+          retention-days: 7

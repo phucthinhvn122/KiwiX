@@ -1,0 +1,25 @@
+#extensionbrowser-hello-badge {
+  align-items: center;
+  background: rgba(23, 23, 28, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+  color: #fff;
+  display: flex;
+  font: 600 12px/1.2 -apple-system, BlinkMacSystemFont, sans-serif;
+  gap: 6px;
+  max-width: min(260px, calc(100vw - 24px));
+  opacity: 0;
+  padding: 8px 12px;
+  pointer-events: none;
+  position: fixed;
+  right: 12px;
+  transform: translateY(8px);
+  transition: opacity 160ms ease, transform 160ms ease;
+  z-index: 2147483647;
+}
+#extensionbrowser-hello-badge.extensionbrowser-hello-visible {
+  opacity: 1;
+  transform: translateY(0);
+}

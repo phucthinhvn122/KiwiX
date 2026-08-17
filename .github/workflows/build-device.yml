@@ -1,0 +1,352 @@
+name: Build Device
+
+on:
+  workflow_dispatch:
+    inputs:
+      export_method:
+        description: Signed IPA export method (used only when all signing secrets exist)
+        required: true
+        default: development
+        type: choice
+        options:
+          - development
+          - ad-hoc
+
+permissions:
+  contents: read
+
+concurrency:
+  group: device-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-device:
+    name: Package unsigned device build and optional signed IPA
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      PROJECT: ExtensionBrowser.xcodeproj
+      SCHEME: ExtensionBrowser
+      EXPORT_METHOD: ${{ github.event.inputs.export_method || 'development' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Report Apple toolchain
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Install pinned XcodeGen
+        run: bash scripts/ci/install-xcodegen.sh
+
+      - name: Generate Xcode project
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec project.yml
+          test -d "${PROJECT}"
+          xcodebuild -project "${PROJECT}" -list
+
+      - name: Build unsigned device archive
+        run: |
+          set -euo pipefail
+          ARCHIVE_PATH="${PWD}/build/unsigned/ExtensionBrowser.xcarchive"
+          xcodebuild \
+            -project "${PROJECT}" \
+            -scheme "${SCHEME}" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "${ARCHIVE_PATH}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=NO \
+            clean archive
+
+          test -d "${ARCHIVE_PATH}/Products/Applications/ExtensionBrowser.app"
+
+      - name: Package unsigned device artifacts
+        run: |
+          set -euo pipefail
+          ARCHIVE_PATH="${PWD}/build/unsigned/ExtensionBrowser.xcarchive"
+          APP_PATH="${ARCHIVE_PATH}/Products/Applications/ExtensionBrowser.app"
+          OUTPUT_DIR="${PWD}/artifacts/device-unsigned"
+          STAGING_DIR="${RUNNER_TEMP}/extensionbrowser-unsigned-ipa"
+
+          mkdir -p "${OUTPUT_DIR}" "${STAGING_DIR}/Payload"
+          ditto "${APP_PATH}" "${STAGING_DIR}/Payload/ExtensionBrowser.app"
+          (
+            cd "${STAGING_DIR}"
+            zip -qry "${OUTPUT_DIR}/ExtensionBrowser-Unsigned.ipa" Payload
+          )
+          ditto -c -k --sequesterRsrc --keepParent \
+            "${ARCHIVE_PATH}" \
+            "${OUTPUT_DIR}/ExtensionBrowser-Unsigned.xcarchive.zip"
+
+          unzip -t "${OUTPUT_DIR}/ExtensionBrowser-Unsigned.ipa"
+          unzip -l "${OUTPUT_DIR}/ExtensionBrowser-Unsigned.ipa" > "${RUNNER_TEMP}/unsigned-ipa-contents.txt"
+          grep -q 'Payload/ExtensionBrowser.app/Info.plist' "${RUNNER_TEMP}/unsigned-ipa-contents.txt"
+          test -s "${OUTPUT_DIR}/ExtensionBrowser-Unsigned.xcarchive.zip"
+
+          cat >> "${GITHUB_STEP_SUMMARY}" <<'SUMMARY'
+          ## Unsigned device artifacts
+
+          `ExtensionBrowser-Unsigned.ipa` is structurally packaged but has no usable Apple signature or embedded provisioning profile. It cannot be installed directly; re-sign it with your own identity/profile. The `.xcarchive.zip` is also provided for signing/export tools.
+          SUMMARY
+
+      - name: Upload unsigned device artifacts
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ExtensionBrowser-Unsigned-Device
+          path: |
+            artifacts/device-unsigned/ExtensionBrowser-Unsigned.ipa
+            artifacts/device-unsigned/ExtensionBrowser-Unsigned.xcarchive.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Inspect signing configuration
+        id: signing
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          BUNDLE_IDENTIFIER: ${{ secrets.BUNDLE_IDENTIFIER }}
+        run: |
+          set -euo pipefail
+          required=(
+            BUILD_CERTIFICATE_BASE64
+            P12_PASSWORD
+            PROVISIONING_PROFILE_BASE64
+            KEYCHAIN_PASSWORD
+            APPLE_TEAM_ID
+            BUNDLE_IDENTIFIER
+          )
+          missing=()
+          configured=0
+
+          for name in "${required[@]}"; do
+            if [[ -n "${!name:-}" ]]; then
+              configured=$((configured + 1))
+            else
+              missing+=("${name}")
+            fi
+          done
+
+          if [[ "${configured}" -eq 0 ]]; then
+            echo "mode=unsigned" >> "${GITHUB_OUTPUT}"
+            echo "Signed export skipped: no signing secrets are configured." >> "${GITHUB_STEP_SUMMARY}"
+          elif [[ "${#missing[@]}" -eq 0 ]]; then
+            echo "mode=signed" >> "${GITHUB_OUTPUT}"
+            echo "All signing secrets are present; the signed archive/export will run." >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "mode=invalid" >> "${GITHUB_OUTPUT}"
+            {
+              echo "## Signing configuration error"
+              echo
+              echo "Signing is partially configured. Missing: \`${missing[*]}\`."
+              echo "The unsigned artifact is available, but this run will fail after reporting the configuration problem."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            echo "::error::Signing is partially configured. Missing: ${missing[*]}"
+          fi
+
+      - name: Install signing identity and provisioning profile
+        id: signing_assets
+        if: ${{ steps.signing.outputs.mode == 'signed' }}
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          BUNDLE_IDENTIFIER: ${{ secrets.BUNDLE_IDENTIFIER }}
+        run: |
+          set -euo pipefail
+          CERTIFICATE_PATH="${RUNNER_TEMP}/extensionbrowser-certificate.p12"
+          PROFILE_PATH="${RUNNER_TEMP}/extensionbrowser-profile.mobileprovision"
+          PROFILE_PLIST="${RUNNER_TEMP}/extensionbrowser-profile.plist"
+          KEYCHAIN_PATH="${RUNNER_TEMP}/extensionbrowser-signing.keychain-db"
+
+          printf '%s' "${BUILD_CERTIFICATE_BASE64}" | base64 --decode > "${CERTIFICATE_PATH}"
+          printf '%s' "${PROVISIONING_PROFILE_BASE64}" | base64 --decode > "${PROFILE_PATH}"
+          test -s "${CERTIFICATE_PATH}"
+          test -s "${PROFILE_PATH}"
+
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security import "${CERTIFICATE_PATH}" \
+            -k "${KEYCHAIN_PATH}" \
+            -P "${P12_PASSWORD}" \
+            -A \
+            -t cert \
+            -f pkcs12
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "${KEYCHAIN_PASSWORD}" \
+            "${KEYCHAIN_PATH}"
+          security list-keychains -d user -s "${KEYCHAIN_PATH}"
+
+          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "${KEYCHAIN_PATH}" | awk '$2 ~ /^[0-9A-F]+$/ && length($2) == 40 && !found { print $2; found=1 }')"
+          if [[ -z "${SIGNING_IDENTITY}" ]]; then
+            echo "::error::The imported P12 contains no valid code-signing identity."
+            exit 1
+          fi
+
+          security cms -D -i "${PROFILE_PATH}" > "${PROFILE_PLIST}"
+          PROFILE_UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "${PROFILE_PLIST}")"
+          PROFILE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :Name' "${PROFILE_PLIST}")"
+          PROFILE_TEAM_ID="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "${PROFILE_PLIST}")"
+          PROFILE_APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "${PROFILE_PLIST}")"
+
+          if [[ ! "${APPLE_TEAM_ID}" =~ ^[A-Za-z0-9]+$ ]]; then
+            echo "::error::APPLE_TEAM_ID must contain only letters and numbers."
+            exit 1
+          fi
+          if [[ ! "${BUNDLE_IDENTIFIER}" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; then
+            echo "::error::BUNDLE_IDENTIFIER has an invalid format."
+            exit 1
+          fi
+          if [[ ! "${PROFILE_UUID}" =~ ^[A-Fa-f0-9-]{36}$ ]]; then
+            echo "::error::Provisioning profile contains an invalid UUID."
+            exit 1
+          fi
+          if [[ -z "${PROFILE_NAME}" || "${PROFILE_NAME}" == *$'\n'* || "${PROFILE_NAME}" == *$'\r'* ]]; then
+            echo "::error::Provisioning profile contains an invalid name."
+            exit 1
+          fi
+
+          if [[ "${PROFILE_TEAM_ID}" != "${APPLE_TEAM_ID}" ]]; then
+            echo "::error::Provisioning profile team (${PROFILE_TEAM_ID}) does not match APPLE_TEAM_ID."
+            exit 1
+          fi
+
+          PROFILE_BUNDLE_PATTERN="${PROFILE_APP_ID#*.}"
+          if [[ ! "${PROFILE_BUNDLE_PATTERN}" =~ ^[A-Za-z0-9.*-]+$ ]]; then
+            echo "::error::Provisioning profile contains an invalid application identifier."
+            exit 1
+          fi
+          if [[ "${PROFILE_BUNDLE_PATTERN}" == *'*' ]]; then
+            PROFILE_BUNDLE_PREFIX="${PROFILE_BUNDLE_PATTERN%\*}"
+            if [[ "${BUNDLE_IDENTIFIER}" != "${PROFILE_BUNDLE_PREFIX}"* ]]; then
+              echo "::error::Wildcard provisioning profile does not cover BUNDLE_IDENTIFIER (${BUNDLE_IDENTIFIER})."
+              exit 1
+            fi
+          elif [[ "${PROFILE_BUNDLE_PATTERN}" != "${BUNDLE_IDENTIFIER}" ]]; then
+              echo "::error::Provisioning profile app identifier does not match BUNDLE_IDENTIFIER (${BUNDLE_IDENTIFIER})."
+              exit 1
+          fi
+
+          PROFILE_DESTINATION="${HOME}/Library/MobileDevice/Provisioning Profiles/${PROFILE_UUID}.mobileprovision"
+          mkdir -p "$(dirname "${PROFILE_DESTINATION}")"
+          cp "${PROFILE_PATH}" "${PROFILE_DESTINATION}"
+
+          {
+            echo "keychain_path=${KEYCHAIN_PATH}"
+            echo "profile_path=${PROFILE_DESTINATION}"
+            echo "profile_name=${PROFILE_NAME}"
+            echo "signing_identity=${SIGNING_IDENTITY}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build signed archive
+        if: ${{ steps.signing.outputs.mode == 'signed' }}
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          BUNDLE_IDENTIFIER: ${{ secrets.BUNDLE_IDENTIFIER }}
+          PROFILE_NAME: ${{ steps.signing_assets.outputs.profile_name }}
+          SIGNING_IDENTITY: ${{ steps.signing_assets.outputs.signing_identity }}
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project "${PROJECT}" \
+            -scheme "${SCHEME}" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "${PWD}/build/signed/ExtensionBrowser.xcarchive" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="${APPLE_TEAM_ID}" \
+            PRODUCT_BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER}" \
+            PROVISIONING_PROFILE_SPECIFIER="${PROFILE_NAME}" \
+            CODE_SIGN_IDENTITY="${SIGNING_IDENTITY}" \
+            clean archive
+
+      - name: Generate ExportOptions.plist
+        if: ${{ steps.signing.outputs.mode == 'signed' }}
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          BUNDLE_IDENTIFIER: ${{ secrets.BUNDLE_IDENTIFIER }}
+          PROFILE_NAME: ${{ steps.signing_assets.outputs.profile_name }}
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 scripts/ci/generate-export-options.py \
+            --output "${RUNNER_TEMP}/ExportOptions.plist" \
+            --method "${EXPORT_METHOD}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            --bundle-id "${BUNDLE_IDENTIFIER}" \
+            --profile-name "${PROFILE_NAME}"
+          plutil -lint "${RUNNER_TEMP}/ExportOptions.plist"
+
+      - name: Export signed IPA
+        if: ${{ steps.signing.outputs.mode == 'signed' }}
+        run: |
+          set -euo pipefail
+          EXPORT_DIR="${PWD}/build/signed-export"
+          OUTPUT_DIR="${PWD}/artifacts/device-signed"
+          mkdir -p "${EXPORT_DIR}" "${OUTPUT_DIR}"
+
+          xcodebuild -exportArchive \
+            -archivePath "${PWD}/build/signed/ExtensionBrowser.xcarchive" \
+            -exportPath "${EXPORT_DIR}" \
+            -exportOptionsPlist "${RUNNER_TEMP}/ExportOptions.plist"
+
+          shopt -s nullglob
+          IPA_FILES=("${EXPORT_DIR}"/*.ipa)
+          if [[ "${#IPA_FILES[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one exported IPA, found ${#IPA_FILES[@]}."
+            exit 1
+          fi
+
+          cp "${IPA_FILES[0]}" "${OUTPUT_DIR}/ExtensionBrowser.ipa"
+          unzip -t "${OUTPUT_DIR}/ExtensionBrowser.ipa"
+          unzip -l "${OUTPUT_DIR}/ExtensionBrowser.ipa" > "${RUNNER_TEMP}/signed-ipa-contents.txt"
+          grep -Eq 'Payload/.*\.app/embedded\.mobileprovision' "${RUNNER_TEMP}/signed-ipa-contents.txt"
+          codesign --verify --deep --strict "${PWD}/build/signed/ExtensionBrowser.xcarchive/Products/Applications/ExtensionBrowser.app"
+
+      - name: Upload signed IPA
+        if: ${{ steps.signing.outputs.mode == 'signed' }}
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ExtensionBrowser-Signed-IPA
+          path: artifacts/device-signed/ExtensionBrowser.ipa
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Clean temporary signing assets
+        if: ${{ always() && steps.signing.outputs.mode == 'signed' }}
+        env:
+          KEYCHAIN_PATH: ${{ runner.temp }}/extensionbrowser-signing.keychain-db
+          PROFILE_PATH: ${{ steps.signing_assets.outputs.profile_path }}
+          CERTIFICATE_PATH: ${{ runner.temp }}/extensionbrowser-certificate.p12
+          DECODED_PROFILE_PATH: ${{ runner.temp }}/extensionbrowser-profile.mobileprovision
+          PROFILE_PLIST_PATH: ${{ runner.temp }}/extensionbrowser-profile.plist
+        run: |
+          set -euo pipefail
+          if [[ -n "${PROFILE_PATH:-}" && -f "${PROFILE_PATH}" ]]; then
+            rm -f -- "${PROFILE_PATH}"
+          fi
+          if [[ -n "${KEYCHAIN_PATH:-}" && -f "${KEYCHAIN_PATH}" ]]; then
+            security delete-keychain "${KEYCHAIN_PATH}"
+          fi
+          rm -f -- "${CERTIFICATE_PATH}" "${DECODED_PROFILE_PATH}" "${PROFILE_PLIST_PATH}"
+
+      - name: Reject partial signing configuration
+        if: ${{ steps.signing.outputs.mode == 'invalid' }}
+        run: |
+          echo "Signing secrets are only partially configured. See the workflow summary for the missing secret names."
+          exit 1

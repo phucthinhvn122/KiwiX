@@ -1,0 +1,44 @@
+# Xcode / XcodeGen output
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+build/
+.build/
+
+# Build products and signing material
+*.app
+*.ipa
+*.xcarchive
+*.xcresult
+*.dSYM
+*.p12
+*.cer
+*.mobileprovision
+*.keychain-db
+ExportOptions.generated.plist
+artifacts/
+/HelloExtension.zip
+
+# Swift Package Manager
+.swiftpm/
+
+# Python validation helpers
+__pycache__/
+*.py[cod]
+
+# macOS / Windows / editors
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+.snapshots/
+*.swp
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.secret
+secrets/

@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Hello Extension",
+  "version": "1.0.0",
+  "description": "Tests ExtensionBrowser content-script matching, CSS, JavaScript, storage, and messaging.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_title": "Hello Extension",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

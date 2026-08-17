@@ -2,6 +2,17 @@ import XCTest
 @testable import ExtensionBrowser
 
 final class SearchEngineTests: XCTestCase {
+    @MainActor
+    func testGoogleIsTheDefaultSearchEngine() {
+        let suiteName = "SearchEngineTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let selectedID = BrowserSettingsStore(defaults: defaults).selectedSearchEngine.id
+
+        XCTAssertEqual(selectedID, SearchEngine.google.id)
+    }
+
     func testRejectsTemplateWithoutPlaceholder() {
         XCTAssertNil(SearchEngine(id: "invalid", name: "Invalid", queryURLTemplate: "https://example.com"))
     }

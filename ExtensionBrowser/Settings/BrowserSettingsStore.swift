@@ -37,7 +37,7 @@ final class BrowserSettingsStore {
 
     var selectedSearchEngine: SearchEngine {
         let selectedID = defaults.string(forKey: Key.selectedSearchEngineID)
-        return availableSearchEngines.first(where: { $0.id == selectedID }) ?? .duckDuckGo
+        return availableSearchEngines.first(where: { $0.id == selectedID }) ?? .google
     }
 
     func selectSearchEngine(id: String) {
@@ -68,7 +68,7 @@ final class BrowserSettingsStore {
         guard remaining.count != customSearchEngines.count else { return }
         persistCustomEngines(remaining)
         if defaults.string(forKey: Key.selectedSearchEngineID) == id {
-            defaults.set(SearchEngine.duckDuckGo.id, forKey: Key.selectedSearchEngineID)
+            defaults.set(SearchEngine.google.id, forKey: Key.selectedSearchEngineID)
         }
         NotificationCenter.default.post(name: .browserSettingsDidChange, object: self)
     }

@@ -17,10 +17,11 @@ final class BrowserViewController: UIViewController {
     private let addressIconView = UIImageView()
     private let backButton = UIButton(type: .system)
     private let forwardButton = UIButton(type: .system)
-    private let extensionActionButton = UIButton(type: .system)
+    private let newTabButton = UIButton(type: .system)
     private let tabsButton = UIButton(type: .system)
     private let menuButton = UIButton(type: .system)
     private let reloadButton = UIButton(type: .system)
+    private let controlsStack = UIStackView()
     private let snapshotView = UIImageView()
     private let restorationSpinner = UIActivityIndicatorView(style: .medium)
     private let errorView = BrowserErrorView()
@@ -173,15 +174,9 @@ final class BrowserViewController: UIViewController {
 
         configureButton(backButton, imageName: "chevron.backward", label: "Back", action: #selector(goBack))
         configureButton(forwardButton, imageName: "chevron.forward", label: "Forward", action: #selector(goForward))
-        configureButton(
-            extensionActionButton,
-            imageName: "puzzlepiece.extension",
-            label: "Extension actions",
-            action: #selector(invokePrimaryExtensionAction)
-        )
-        extensionActionButton.isHidden = true
+        configureButton(newTabButton, imageName: "plus", label: "New tab", action: #selector(createRegularTab))
         configureButton(tabsButton, imageName: "square.on.square", label: "Show tabs", action: #selector(showTabSwitcher))
-        configureButton(menuButton, imageName: "line.3.horizontal", label: "Browser menu", action: nil)
+        configureButton(menuButton, imageName: "ellipsis", label: "Browser menu", action: nil)
         menuButton.showsMenuAsPrimaryAction = true
 
         addressField.translatesAutoresizingMaskIntoConstraints = false
@@ -219,13 +214,9 @@ final class BrowserViewController: UIViewController {
         addressField.rightView = reloadButton
         addressField.rightViewMode = .unlessEditing
 
-        let controlsStack = UIStackView(arrangedSubviews: [
-            backButton,
-            forwardButton,
-            extensionActionButton,
-            tabsButton,
-            menuButton
-        ])
+        [backButton, forwardButton, newTabButton, tabsButton, menuButton].forEach {
+            controlsStack.addArrangedSubview($0)
+        }
         controlsStack.axis = .horizontal
         controlsStack.alignment = .center
         controlsStack.distribution = .equalCentering
@@ -239,11 +230,13 @@ final class BrowserViewController: UIViewController {
         toolbar.addSubview(stack)
         view.addSubview(toolbar)
 
-        for button in [backButton, forwardButton, extensionActionButton, tabsButton, menuButton] {
+        for button in [backButton, forwardButton, newTabButton, tabsButton, menuButton] {
             button.widthAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
             button.heightAnchor.constraint(equalToConstant: 38).isActive = true
         }
         addressField.heightAnchor.constraint(equalToConstant: 46).isActive = true
+
+        view.keyboardLayoutGuide.followsUndockedKeyboard = true
 
         NSLayoutConstraint.activate([
             webContentContainer.bottomAnchor.constraint(equalTo: toolbar.topAnchor),
@@ -259,7 +252,7 @@ final class BrowserViewController: UIViewController {
             stack.topAnchor.constraint(equalTo: toolbar.layoutMarginsGuide.topAnchor),
             stack.leadingAnchor.constraint(equalTo: toolbar.layoutMarginsGuide.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: toolbar.layoutMarginsGuide.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -7)
+            stack.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -7)
         ])
     }
 
@@ -289,7 +282,7 @@ final class BrowserViewController: UIViewController {
     ) {
         var configuration = UIButton.Configuration.plain()
         configuration.image = UIImage(systemName: imageName)
-        configuration.baseForegroundColor = KiwiTheme.accentDeep
+        configuration.baseForegroundColor = .label
         configuration.contentInsets = .zero
         button.configuration = configuration
         button.accessibilityLabel = label
@@ -368,8 +361,12 @@ final class BrowserViewController: UIViewController {
 
     private func updateAddress(for tab: Tab) {
         guard !addressField.isFirstResponder else { return }
-        if tab.url?.absoluteString == "about:blank" {
+        if tab.url?.absoluteString == "about:blank" || tab.url == nil {
             addressField.text = nil
+        } else if let url = tab.url,
+                  ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+                  let host = url.host {
+            addressField.text = host
         } else {
             addressField.text = tab.url?.absoluteString
         }
@@ -380,6 +377,8 @@ final class BrowserViewController: UIViewController {
             addressIconView.image = UIImage(systemName: "hand.raised.fill")
         } else if tab.url == nil || tab.url?.absoluteString == "about:blank" {
             addressIconView.image = UIImage(systemName: "magnifyingglass")
+        } else if tab.url?.scheme?.lowercased() == "https" {
+            addressIconView.image = UIImage(systemName: "lock.fill")
         } else {
             addressIconView.image = UIImage(systemName: "globe")
         }
@@ -472,41 +471,7 @@ final class BrowserViewController: UIViewController {
 
     private func applyExtensionActions(_ actions: [BrowserExtensionActionDescriptor]) {
         extensionActions = actions
-        extensionActionButton.isHidden = actions.isEmpty
-        extensionActionButton.isEnabled = !actions.isEmpty
-
-        var configuration = extensionActionButton.configuration ?? .plain()
-        if actions.count == 1,
-           let iconData = actions[0].iconData,
-           let icon = UIImage(data: iconData) {
-            configuration.image = icon.withRenderingMode(.alwaysTemplate)
-        } else {
-            configuration.image = UIImage(systemName: "puzzlepiece.extension")
-        }
-        extensionActionButton.configuration = configuration
-
-        if actions.count > 1 {
-            extensionActionButton.menu = UIMenu(
-                title: "Extension Actions",
-                children: actions.map { descriptor in
-                    UIAction(
-                        title: descriptor.title,
-                        image: descriptor.iconData.flatMap(UIImage.init(data:))
-                    ) { [weak self] _ in
-                        self?.invokeExtensionAction(descriptor)
-                    }
-                }
-            )
-            extensionActionButton.showsMenuAsPrimaryAction = true
-        } else {
-            extensionActionButton.menu = nil
-            extensionActionButton.showsMenuAsPrimaryAction = false
-        }
-    }
-
-    @objc private func invokePrimaryExtensionAction() {
-        guard let action = extensionActions.first else { return }
-        invokeExtensionAction(action)
+        menuButton.menu = makeBrowserMenu()
     }
 
     private func invokeExtensionAction(_ action: BrowserExtensionActionDescriptor) {
@@ -529,8 +494,8 @@ final class BrowserViewController: UIViewController {
                 case let .presentPopup(controller):
                     controller.modalPresentationStyle = .popover
                     if let popover = controller.popoverPresentationController {
-                        popover.sourceView = self.extensionActionButton
-                        popover.sourceRect = self.extensionActionButton.bounds
+                        popover.sourceView = self.menuButton
+                        popover.sourceRect = self.menuButton.bounds
                     }
                     self.present(controller, animated: true)
                 }
@@ -617,6 +582,22 @@ final class BrowserViewController: UIViewController {
             UIMenu(options: .displayInline, children: [history, downloads, extensions, settings])
         ]
 
+        if !extensionActions.isEmpty {
+            let extensionActionMenu = UIMenu(
+                title: "Extension Actions",
+                image: UIImage(systemName: "puzzlepiece.extension"),
+                children: extensionActions.map { descriptor in
+                    UIAction(
+                        title: descriptor.title,
+                        image: descriptor.iconData.flatMap(UIImage.init(data:))
+                    ) { [weak self] _ in
+                        self?.invokeExtensionAction(descriptor)
+                    }
+                }
+            )
+            children.insert(extensionActionMenu, at: 3)
+        }
+
         #if DEBUG
         children.append(UIAction(title: "Debug Info", image: UIImage(systemName: "ladybug")) { [weak self] _ in
             self?.showDebugInfo()
@@ -631,6 +612,10 @@ final class BrowserViewController: UIViewController {
         addressField.text = nil
         updatePrivateAppearance(for: tab)
         addressField.becomeFirstResponder()
+    }
+
+    @objc private func createRegularTab() {
+        createNewTab(isPrivate: false)
     }
 
     @objc private func goBack() {
@@ -791,9 +776,15 @@ final class BrowserViewController: UIViewController {
 
 extension BrowserViewController: UITextFieldDelegate {
     func textFieldDidBeginEditing(_ textField: UITextField) {
-        UIView.animate(withDuration: 0.15) {
+        if let url = tabManager.selectedTab?.url,
+           url.absoluteString != "about:blank" {
+            textField.text = url.absoluteString
+        }
+        UIView.animate(withDuration: 0.2) {
+            self.controlsStack.isHidden = true
             textField.layer.borderColor = KiwiTheme.accentDeep.cgColor
-            textField.backgroundColor = .systemBackground
+            textField.backgroundColor = KiwiTheme.elevatedSurface
+            self.view.layoutIfNeeded()
         }
         DispatchQueue.main.async {
             textField.selectAll(nil)
@@ -801,8 +792,10 @@ extension BrowserViewController: UITextFieldDelegate {
     }
 
     func textFieldDidEndEditing(_ textField: UITextField) {
-        UIView.animate(withDuration: 0.15) {
+        UIView.animate(withDuration: 0.2) {
+            self.controlsStack.isHidden = false
             textField.layer.borderColor = UIColor.clear.cgColor
+            self.view.layoutIfNeeded()
         }
         updatePrivateAppearance(for: tabManager.selectedTab)
         if let tab = tabManager.selectedTab {

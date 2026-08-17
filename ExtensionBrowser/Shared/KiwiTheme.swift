@@ -2,15 +2,15 @@ import UIKit
 
 enum KiwiTheme {
     static let accent = UIColor(
-        red: 0.48,
-        green: 0.82,
-        blue: 0.16,
+        red: 0.26,
+        green: 0.52,
+        blue: 0.96,
         alpha: 1
     )
     static let accentDeep = UIColor(
-        red: 0.20,
-        green: 0.54,
-        blue: 0.12,
+        red: 0.10,
+        green: 0.45,
+        blue: 0.91,
         alpha: 1
     )
     static let cyan = UIColor(
@@ -28,20 +28,20 @@ enum KiwiTheme {
 
     static let canvas = UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.025, green: 0.055, blue: 0.10, alpha: 1)
-            : UIColor(red: 0.955, green: 0.975, blue: 0.965, alpha: 1)
+            ? UIColor(red: 0.125, green: 0.129, blue: 0.141, alpha: 1)
+            : UIColor(red: 0.973, green: 0.976, blue: 0.980, alpha: 1)
     }
 
     static let elevatedSurface = UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.075, green: 0.105, blue: 0.15, alpha: 1)
+            ? UIColor(red: 0.18, green: 0.184, blue: 0.196, alpha: 1)
             : .white
     }
 
     static let fieldSurface = UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor.white.withAlphaComponent(0.09)
-            : UIColor(red: 0.92, green: 0.945, blue: 0.93, alpha: 1)
+            ? UIColor(red: 0.235, green: 0.239, blue: 0.251, alpha: 1)
+            : UIColor(red: 0.925, green: 0.933, blue: 0.945, alpha: 1)
     }
 
     static func applyGlobalAppearance() {

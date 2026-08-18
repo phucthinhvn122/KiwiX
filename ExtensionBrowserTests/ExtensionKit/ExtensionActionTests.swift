@@ -110,7 +110,6 @@ final class ExtensionActionTests: XCTestCase {
         let staged = stagingContainer.appendingPathComponent("Payload", isDirectory: true)
         try fileManager.createDirectory(at: staged, withIntermediateDirectories: true)
 
-        let identifier = try XCTUnwrap(ExtensionIdentifier(rawValue: String(repeating: "d", count: 32)))
         let manifest = WebExtensionManifest(
             manifestVersion: 3,
             name: "Action fixture",
@@ -131,17 +130,24 @@ final class ExtensionActionTests: XCTestCase {
                 options: .atomic
             )
         }
+        let identity = try ExtensionIdentityGenerator.identity(forDirectory: staged)
+        let identifier = identity.identifier
         let preview = ExtensionPackagePreview(
             id: identifier,
             manifest: manifest,
-            packageDigest: String(repeating: "0", count: 64),
+            packageDigest: identity.digest,
             stagedDirectoryURL: staged,
             stagingContainerURL: stagingContainer
         )
         let repository = ExtensionRepository(baseDirectoryURL: base)
         _ = try await repository.install(preview)
         let permissions = ExtensionPermissionManager()
-        try await permissions.register(extensionID: identifier, manifest: manifest, isEnabled: true)
+        try await permissions.register(
+            extensionID: identifier,
+            manifest: manifest,
+            isEnabled: true,
+            grantedCapabilities: [.activeTab]
+        )
         let storage = ExtensionLocalStorage(repository: repository)
         let registry = ExtensionAPIRegistry(storage: storage, permissions: permissions)
         registry.replaceActionDefaults(with: try await repository.installedExtensions())

@@ -8,13 +8,17 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
     private let store: DownloadStore
     private let fileManager: FileManager
     private let explicitDownloadsDirectoryURL: URL?
+    private let resourcePolicy: DownloadResourcePolicy
+    private let activityRegistry = ActiveDownloadRegistry()
 
     private var itemsByID: [UUID: DownloadItem] = [:]
     private var downloadsByID: [UUID: WKDownload] = [:]
     private var IDsByDownload: [ObjectIdentifier: UUID] = [:]
     private var lastPersistedBytes: [UUID: Int64] = [:]
+    private var terminatingDownloadIDs: Set<UUID> = []
     private var progressTimer: Timer?
     private var persistenceTail: Task<Void, Never>?
+    private var reloadGeneration = 0
 
     var onItemsChanged: (([DownloadItem]) -> Void)? {
         didSet { onItemsChanged?(items) }
@@ -31,13 +35,41 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
         }
     }
 
+    func confirmationMessage(expectedBytes: Int64, isPrivate: Bool) -> String? {
+        var messages: [String] = []
+        if expectedBytes > resourcePolicy.maximumDownloadBytes {
+            return maximumSizeMessage
+        }
+        if resourcePolicy.requiresLargeDownloadConfirmation(expectedBytes: expectedBytes) {
+            let size = ByteCountFormatter.string(fromByteCount: expectedBytes, countStyle: .file)
+            messages.append("This is a large download (about \(size)).")
+        }
+        if isPrivate {
+            messages.append(
+                "Private browsing history will not record it, but the downloaded file will remain on this device until you delete it."
+            )
+        }
+        return messages.isEmpty ? nil : messages.joined(separator: "\n\n")
+    }
+
+    var maximumSizeMessage: String {
+        let size = ByteCountFormatter.string(fromByteCount: resourcePolicy.maximumDownloadBytes, countStyle: .file)
+        return "This file exceeds the \(size) download safety limit."
+    }
+
+    func exceedsMaximumSize(expectedBytes: Int64) -> Bool {
+        expectedBytes > resourcePolicy.maximumDownloadBytes
+    }
+
     init(
         store: DownloadStore? = nil,
         downloadsDirectoryURL: URL? = nil,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        resourcePolicy: DownloadResourcePolicy = .standard
     ) {
         self.fileManager = fileManager
         explicitDownloadsDirectoryURL = downloadsDirectoryURL
+        self.resourcePolicy = resourcePolicy
         self.store = store ?? DownloadStore(
             downloadsDirectoryURL: downloadsDirectoryURL,
             fileManager: fileManager
@@ -51,17 +83,27 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
     }
 
     func reload() {
+        reloadGeneration += 1
+        let generation = reloadGeneration
         Task { [weak self, store] in
             do {
-                let persistedItems = try await store.items()
                 guard let self else { return }
                 let liveIDs = Set(self.downloadsByID.keys)
-                for item in persistedItems where !liveIDs.contains(item.id) {
+                let persistedItems = try await store.reconciledItems(
+                    excludingLiveIDs: liveIDs,
+                    activityRegistry: self.activityRegistry
+                )
+                guard generation == self.reloadGeneration else { return }
+                let currentLiveIDs = Set(self.downloadsByID.keys)
+                self.itemsByID = self.itemsByID.filter { currentLiveIDs.contains($0.key) }
+                for item in persistedItems where !currentLiveIDs.contains(item.id) {
                     self.itemsByID[item.id] = item
                 }
                 self.notifyItemsChanged()
             } catch {
-                self?.report(error)
+                guard let self, generation == self.reloadGeneration else { return }
+                self.report(error)
+                self.notifyItemsChanged()
             }
         }
     }
@@ -71,6 +113,11 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
     func adopt(_ download: WKDownload, isPrivate: Bool) {
         let objectID = ObjectIdentifier(download)
         guard IDsByDownload[objectID] == nil else { return }
+        guard downloadsByID.count < resourcePolicy.maximumConcurrentDownloads else {
+            download.cancel { _ in }
+            onError?("Too many downloads are already running. Try again when one finishes.")
+            return
+        }
 
         let now = Date()
         let item = DownloadItem(
@@ -82,6 +129,7 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
         itemsByID[item.id] = item
         downloadsByID[item.id] = download
         IDsByDownload[objectID] = item.id
+        activityRegistry.insert(item.id)
         lastPersistedBytes[item.id] = 0
         download.delegate = self
         persist(item)
@@ -89,7 +137,7 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
     }
 
     func cancel(id: UUID) {
-        guard let download = downloadsByID[id] else { return }
+        guard let download = downloadsByID[id], terminatingDownloadIDs.insert(id).inserted else { return }
         download.cancel { [weak self, weak download] _ in
             guard let download else { return }
             Task { @MainActor [weak self] in
@@ -108,6 +156,7 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
             removeDownloadedFileIfSafe(item.localFileURL)
         }
         lastPersistedBytes.removeValue(forKey: id)
+        terminatingDownloadIDs.remove(id)
         enqueuePersistence { store in
             _ = try await store.remove(id: id)
         }
@@ -139,6 +188,8 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
         IDsByDownload.removeAll()
         itemsByID.removeAll()
         lastPersistedBytes.removeAll()
+        terminatingDownloadIDs.removeAll()
+        activityRegistry.removeAll()
         stopProgressTimerIfIdle()
         enqueuePersistence { store in
             _ = try await store.clear()
@@ -174,17 +225,35 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
             try fileManager.createDirectory(
                 at: directoryURL,
                 withIntermediateDirectories: true,
-                attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+                attributes: [.protectionKey: AppDataProtectionPolicy.Category.download.protection]
             )
-            let destinationURL = try DownloadFilePath.uniqueDestination(
-                in: directoryURL,
-                suggestedFilename: suggestedFilename,
+            try AppDataProtectionPolicy.apply(
+                to: directoryURL,
+                category: .download,
                 fileManager: fileManager
             )
+            let expectedBytes = response.expectedContentLength
+            guard resourcePolicy.permits(
+                expectedBytes: expectedBytes,
+                availableBytes: availableCapacity(at: directoryURL)
+            ) else {
+                throw DownloadSafetyError.insufficientCapacityOrSizeLimit(resourcePolicy.maximumDownloadBytes)
+            }
+            // WebKit writes to an unmistakable hidden partial. Only a successful delegate
+            // completion moves it to a user-visible unique filename, so startup can always
+            // clean interrupted private downloads even though they have no persisted metadata.
+            let destinationURL = directoryURL.appendingPathComponent(
+                ".kiwix-\(id.uuidString.lowercased()).partial",
+                isDirectory: false
+            )
+            guard DownloadFilePath.isDirectChild(destinationURL, of: directoryURL),
+                  !fileManager.fileExists(atPath: destinationURL.path) else {
+                throw CocoaError(.fileWriteFileExists)
+            }
 
             let now = Date()
             item.sourceURL = response.url ?? item.sourceURL
-            item.fileName = destinationURL.lastPathComponent
+            item.fileName = DownloadFilePath.sanitizedFilename(suggestedFilename)
             item.localFileURL = destinationURL
             item.mimeType = response.mimeType
             item.totalBytesExpected = response.expectedContentLength > 0
@@ -228,10 +297,45 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
         item.completedAt = now
         item.errorDescription = error.map { boundedErrorDescription($0.localizedDescription) }
 
-        if status == .completed, let fileURL = item.localFileURL {
+        if status == .completed {
+            do {
+                try finalizePartialFile(for: &item)
+            } catch {
+                item.status = .failed
+                item.errorDescription = "The downloaded file could not be finalized."
+                removeDownloadedFileIfSafe(item.localFileURL)
+                item.localFileURL = nil
+            }
+        }
+
+        if item.status == .completed, let fileURL = item.localFileURL {
             if let attributes = try? fileManager.attributesOfItem(atPath: fileURL.path),
                let size = attributes[.size] as? NSNumber {
                 item.bytesReceived = max(item.bytesReceived, size.int64Value)
+            }
+            if resourcePolicy.shouldAbort(
+                receivedBytes: item.bytesReceived,
+                availableBytes: availableCapacity(at: fileURL.deletingLastPathComponent())
+            ) {
+                item.status = .failed
+                item.errorDescription = DownloadSafetyError
+                    .insufficientCapacityOrSizeLimit(resourcePolicy.maximumDownloadBytes)
+                    .localizedDescription
+                removeDownloadedFileIfSafe(fileURL)
+                item.localFileURL = nil
+            } else {
+                do {
+                    try AppDataProtectionPolicy.apply(
+                        to: fileURL,
+                        category: .download,
+                        fileManager: fileManager
+                    )
+                } catch {
+                    item.status = .failed
+                    item.errorDescription = "Could not protect the downloaded file."
+                    removeDownloadedFileIfSafe(fileURL)
+                    item.localFileURL = nil
+                }
             }
         } else {
             removeDownloadedFileIfSafe(item.localFileURL)
@@ -262,8 +366,30 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
 
     private func refreshActiveProgress() {
         var changed = false
+        var unsafeDownloads: [(UUID, WKDownload)] = []
         for (id, download) in downloadsByID {
             changed = updateProgress(for: id, from: download, forcePersistence: false) || changed
+            if let item = itemsByID[id], resourcePolicy.shouldAbort(
+                receivedBytes: item.bytesReceived,
+                availableBytes: item.localFileURL.flatMap { availableCapacity(at: $0.deletingLastPathComponent()) }
+            ) {
+                unsafeDownloads.append((id, download))
+            }
+        }
+        for (id, download) in unsafeDownloads {
+            guard terminatingDownloadIDs.insert(id).inserted else { continue }
+            download.cancel { [weak self, weak download] _ in
+                guard let download else { return }
+                Task { @MainActor [weak self] in
+                    self?.finish(
+                        download,
+                        status: .failed,
+                        error: DownloadSafetyError.insufficientCapacityOrSizeLimit(
+                            self?.resourcePolicy.maximumDownloadBytes ?? DownloadResourcePolicy.standard.maximumDownloadBytes
+                        )
+                    )
+                }
+            }
         }
         if changed {
             notifyItemsChanged()
@@ -308,6 +434,8 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
         guard let id = IDsByDownload.removeValue(forKey: ObjectIdentifier(download)) else { return }
         downloadsByID.removeValue(forKey: id)
         lastPersistedBytes.removeValue(forKey: id)
+        terminatingDownloadIDs.remove(id)
+        activityRegistry.remove(id)
     }
 
     private func persist(_ item: DownloadItem) {
@@ -336,7 +464,7 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
     }
 
     private func report(_ error: Error) {
-        onError?(error.localizedDescription)
+        onError?(SafeInput.userFacingError(error))
     }
 
     private func downloadsDirectoryURL() throws -> URL {
@@ -364,13 +492,47 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
         }
     }
 
-    private func boundedErrorDescription(_ description: String) -> String {
-        var result = ""
-        for character in description {
-            let proposed = result + String(character)
-            guard proposed.utf8.count <= 512 else { break }
-            result = proposed
+    private func finalizePartialFile(for item: inout DownloadItem) throws {
+        guard let partialURL = item.localFileURL,
+              isSafeDownloadFile(partialURL),
+              DownloadFilePath.isInternalPartialFilename(partialURL.lastPathComponent),
+              fileManager.fileExists(atPath: partialURL.path) else {
+            throw CocoaError(.fileReadNoSuchFile)
         }
-        return result
+        let directoryURL = try downloadsDirectoryURL()
+        let finalURL = try DownloadFilePath.uniqueDestination(
+            in: directoryURL,
+            suggestedFilename: item.fileName,
+            fileManager: fileManager
+        )
+        try fileManager.moveItem(at: partialURL, to: finalURL)
+        item.fileName = finalURL.lastPathComponent
+        item.localFileURL = finalURL
+    }
+
+    private func boundedErrorDescription(_ description: String) -> String {
+        SafeInput.displayText(description, maximumByteCount: 512, allowsNewlines: true)
+    }
+
+    private func availableCapacity(at directory: URL) -> Int64? {
+        if let capacity = try? directory.resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+        ).volumeAvailableCapacityForImportantUsage {
+            return capacity
+        }
+        let attributes = try? fileManager.attributesOfFileSystem(forPath: directory.path)
+        return (attributes?[.systemFreeSize] as? NSNumber)?.int64Value
+    }
+}
+
+private enum DownloadSafetyError: LocalizedError {
+    case insufficientCapacityOrSizeLimit(Int64)
+
+    var errorDescription: String? {
+        switch self {
+        case .insufficientCapacityOrSizeLimit(let maximumBytes):
+            let size = ByteCountFormatter.string(fromByteCount: maximumBytes, countStyle: .file)
+            return "The download exceeds the \(size) safety limit or would leave too little free storage."
+        }
     }
 }

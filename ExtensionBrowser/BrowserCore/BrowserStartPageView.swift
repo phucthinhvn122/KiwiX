@@ -64,11 +64,14 @@ final class BrowserStartPageView: UIView {
         logoContainer.addSubview(logoImageView)
 
         titleLabel.text = "KiwiX"
-        titleLabel.font = .systemFont(ofSize: 34, weight: .bold)
+        titleLabel.font = UIFontMetrics(forTextStyle: .largeTitle).scaledFont(
+            for: .systemFont(ofSize: 34, weight: .bold)
+        )
         titleLabel.adjustsFontForContentSizeCategory = true
         titleLabel.textAlignment = .center
 
-        subtitleLabel.font = .systemFont(ofSize: 15, weight: .regular)
+        subtitleLabel.font = .preferredFont(forTextStyle: .subheadline)
+        subtitleLabel.adjustsFontForContentSizeCategory = true
         subtitleLabel.textColor = .secondaryLabel
         subtitleLabel.numberOfLines = 2
         subtitleLabel.textAlignment = .center
@@ -138,10 +141,10 @@ final class BrowserStartPageView: UIView {
             logoContainer.heightAnchor.constraint(equalToConstant: 64),
             logoImageView.centerXAnchor.constraint(equalTo: logoContainer.centerXAnchor),
             logoImageView.centerYAnchor.constraint(equalTo: logoContainer.centerYAnchor),
-            privateButton.heightAnchor.constraint(equalToConstant: 72),
-            historyButton.heightAnchor.constraint(equalToConstant: 72),
-            downloadsButton.heightAnchor.constraint(equalToConstant: 72),
-            extensionsButton.heightAnchor.constraint(equalToConstant: 72)
+            privateButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 72),
+            historyButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 72),
+            downloadsButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 72),
+            extensionsButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 72)
         ])
     }
 
@@ -159,7 +162,9 @@ final class BrowserStartPageView: UIView {
         configuration.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 10, bottom: 12, trailing: 10)
         configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var outgoing = incoming
-            outgoing.font = .systemFont(ofSize: 14, weight: .semibold)
+            outgoing.font = UIFontMetrics(forTextStyle: .body).scaledFont(
+                for: .systemFont(ofSize: 14, weight: .semibold)
+            )
             return outgoing
         }
         button.configuration = configuration

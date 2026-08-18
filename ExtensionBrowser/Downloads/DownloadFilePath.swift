@@ -106,7 +106,20 @@ enum DownloadFilePath {
         guard canonicalCandidate.deletingLastPathComponent() == canonicalDirectory else {
             return false
         }
-        return canonicalCandidate.lastPathComponent == sanitizedFilename(canonicalCandidate.lastPathComponent)
+        let name = canonicalCandidate.lastPathComponent
+        return isInternalPartialFilename(name) || name == sanitizedFilename(name)
+    }
+
+    static func isInternalPartialFilename(_ name: String) -> Bool {
+        internalPartialIdentifier(name) != nil
+    }
+
+    static func internalPartialIdentifier(_ name: String) -> UUID? {
+        let prefix = ".kiwix-"
+        let suffix = ".partial"
+        guard name.hasPrefix(prefix), name.hasSuffix(suffix) else { return nil }
+        let uuidText = String(name.dropFirst(prefix.count).dropLast(suffix.count))
+        return UUID(uuidString: uuidText)
     }
 
     private static func truncatingUTF8(_ value: String, to maximumByteCount: Int) -> String {

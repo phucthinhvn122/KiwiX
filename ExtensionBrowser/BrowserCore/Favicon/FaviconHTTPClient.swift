@@ -29,21 +29,25 @@ private final class FaviconSessionDelegate: NSObject, URLSessionTaskDelegate, @u
             redirectCounts[task.taskIdentifier] = next
             return next
         }
-        guard redirectCount <= maximumRedirectCount,
-              let targetURL = request.url,
-              let safeURL = FaviconURLPolicy.validatedRemoteURL(
-                targetURL,
-                relativeTo: task.originalRequest?.url
-              ) else {
+        guard redirectCount <= maximumRedirectCount, let targetURL = request.url else {
             completionHandler(nil)
             return
         }
-        var sanitized = request
-        sanitized.url = safeURL
-        sanitized.httpShouldHandleCookies = false
-        sanitized.setValue(nil, forHTTPHeaderField: "Cookie")
-        sanitized.setValue(nil, forHTTPHeaderField: "Authorization")
-        completionHandler(sanitized)
+        Task {
+            guard let safeURL = try? await NetworkDestinationPolicy.normalizedPublicHTTPURL(
+                targetURL,
+                relativeTo: task.currentRequest?.url ?? task.originalRequest?.url
+            ) else {
+                completionHandler(nil)
+                return
+            }
+            var sanitized = request
+            sanitized.url = safeURL
+            sanitized.httpShouldHandleCookies = false
+            sanitized.setValue(nil, forHTTPHeaderField: "Cookie")
+            sanitized.setValue(nil, forHTTPHeaderField: "Authorization")
+            completionHandler(sanitized)
+        }
     }
 
     func urlSession(
@@ -98,7 +102,7 @@ final class FaviconHTTPClient: @unchecked Sendable {
     }
 
     func download(from url: URL) async throws -> FaviconDownload {
-        guard let safeURL = FaviconURLPolicy.validatedRemoteURL(url) else {
+        guard let safeURL = try? await NetworkDestinationPolicy.normalizedPublicHTTPURL(url) else {
             throw FaviconNetworkError.invalidURL
         }
         var request = URLRequest(
@@ -112,9 +116,11 @@ final class FaviconHTTPClient: @unchecked Sendable {
         request.setValue("ExtensionBrowser/0.1 Favicon", forHTTPHeaderField: "User-Agent")
 
         let (bytes, response) = try await session.bytes(for: request)
-        guard let response = response as? HTTPURLResponse,
-              let finalURL = response.url,
-              let safeFinalURL = FaviconURLPolicy.validatedRemoteURL(finalURL, relativeTo: safeURL) else {
+        guard let response = response as? HTTPURLResponse, let finalURL = response.url,
+              let safeFinalURL = try? await NetworkDestinationPolicy.normalizedPublicHTTPURL(
+                finalURL,
+                relativeTo: safeURL
+              ) else {
             throw FaviconNetworkError.invalidResponse
         }
         guard (200..<300).contains(response.statusCode) else {

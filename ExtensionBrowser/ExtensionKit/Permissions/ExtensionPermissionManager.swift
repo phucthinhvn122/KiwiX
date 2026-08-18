@@ -47,21 +47,43 @@ public actor ExtensionPermissionManager {
         extensionID: ExtensionIdentifier,
         manifest: WebExtensionManifest,
         isEnabled: Bool,
-        grantDeclaredPermissions: Bool = true
+        grantedCapabilities: Set<ExtensionCapability> = [],
+        grantedHostPermissions: [String] = [],
+        grantDeclaredPermissions: Bool = false
     ) throws {
         let capabilities = Set(manifest.permissions.compactMap(ExtensionCapability.init(rawValue:)))
-        let hostPatterns = try Set(manifest.hostPermissions).sorted().map(WebExtensionMatchPattern.init)
+        let declaredHostSources = Set(manifest.hostPermissions + manifest.contentScripts.flatMap(\.matches))
+        let declaredPatterns = try declaredHostSources.sorted().map(WebExtensionMatchPattern.init)
+        let requestedGrantSources = grantDeclaredPermissions ? declaredHostSources : Set(grantedHostPermissions)
+        let grantedPatterns = try requestedGrantSources.sorted().map(WebExtensionMatchPattern.init).filter { grant in
+            declaredPatterns.contains(where: { $0.encompasses(grant) })
+        }
+        let declaredProgrammaticPatterns = try manifest.hostPermissions.map(WebExtensionMatchPattern.init)
+        let hostPatterns = grantedPatterns.filter { grant in
+            declaredProgrammaticPatterns.contains(where: { $0.encompasses(grant) })
+        }
         let contentScriptHostRules = try manifest.contentScripts.map { script in
+            let declaredIncludes = try script.matches.map(WebExtensionMatchPattern.init)
+            let effectiveIncludes = grantedPatterns.flatMap { grant in
+                declaredIncludes.compactMap { declared -> WebExtensionMatchPattern? in
+                    if declared.encompasses(grant) { return grant }
+                    if grant.encompasses(declared) { return declared }
+                    return nil
+                }
+            }
             ContentScriptHostRule(
-                includes: try script.matches.map(WebExtensionMatchPattern.init),
+                includes: Array(Set(effectiveIncludes)),
                 excludes: try script.excludeMatches.map(WebExtensionMatchPattern.init)
             )
-        }
+        }.filter { !$0.includes.isEmpty }
+        let effectiveCapabilities = grantDeclaredPermissions
+            ? capabilities
+            : grantedCapabilities.intersection(capabilities)
         states[extensionID] = PermissionState(
             declaredCapabilities: capabilities,
-            grantedCapabilities: grantDeclaredPermissions ? capabilities : [],
-            grantedHostPatterns: grantDeclaredPermissions ? hostPatterns : [],
-            contentScriptHostRules: grantDeclaredPermissions ? contentScriptHostRules : [],
+            grantedCapabilities: effectiveCapabilities,
+            grantedHostPatterns: hostPatterns,
+            contentScriptHostRules: contentScriptHostRules,
             activeTabOrigins: [:],
             isEnabled: isEnabled
         )
@@ -94,6 +116,9 @@ public actor ExtensionPermissionManager {
             state.grantedCapabilities.insert(capability)
         } else {
             state.grantedCapabilities.remove(capability)
+            if capability == .activeTab {
+                state.activeTabOrigins.removeAll(keepingCapacity: false)
+            }
         }
         states[extensionID] = state
     }
@@ -151,7 +176,8 @@ public actor ExtensionPermissionManager {
         guard state.isEnabled else { throw ExtensionRuntimeError.extensionDisabled(extensionID.rawValue) }
         let matchesDeclaredHost = state.grantedHostPatterns.contains(where: { $0.matches(url) })
         let requestedOrigin = Self.origin(of: url)
-        let matchesActiveTab = tabID.flatMap { state.activeTabOrigins[$0] } == requestedOrigin
+        let matchesActiveTab = state.grantedCapabilities.contains(.activeTab)
+            && tabID.flatMap { state.activeTabOrigins[$0] } == requestedOrigin
             && requestedOrigin != nil
         guard matchesDeclaredHost || matchesActiveTab else {
             throw ExtensionRuntimeError.permissionDenied("host access for \(url.host ?? url.absoluteString)")
@@ -165,7 +191,8 @@ public actor ExtensionPermissionManager {
     ) -> Bool {
         guard let state = states[extensionID], state.isEnabled else { return false }
         let requestedOrigin = Self.origin(of: url)
-        let matchesActiveTab = tabID.flatMap { state.activeTabOrigins[$0] } == requestedOrigin
+        let matchesActiveTab = state.grantedCapabilities.contains(.activeTab)
+            && tabID.flatMap { state.activeTabOrigins[$0] } == requestedOrigin
             && requestedOrigin != nil
         return state.grantedHostPatterns.contains(where: { $0.matches(url) })
             || state.contentScriptHostRules.contains(where: { $0.matches(url) })

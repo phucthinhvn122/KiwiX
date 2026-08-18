@@ -94,7 +94,7 @@ final class TabSwitcherViewController: UIViewController {
     private func makeLayout() -> UICollectionViewLayout {
         UICollectionViewCompositionalLayout { _, environment in
             let availableWidth = environment.container.effectiveContentSize.width
-            let columnCount = availableWidth >= 760 ? 3 : 2
+            let columnCount = availableWidth >= 760 ? 3 : (availableWidth >= 500 ? 2 : 1)
             let itemSize = NSCollectionLayoutSize(
                 widthDimension: .fractionalWidth(1.0 / CGFloat(columnCount)),
                 heightDimension: .estimated(268)
@@ -182,9 +182,11 @@ private final class TabCardCell: UICollectionViewCell {
         snapshotView.image = UIImage(systemName: "globe")
         snapshotView.tintColor = .tertiaryLabel
 
-        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+        titleLabel.font = UIFontMetrics(forTextStyle: .headline).scaledFont(
+            for: .systemFont(ofSize: 16, weight: .semibold)
+        )
         titleLabel.adjustsFontForContentSizeCategory = true
-        titleLabel.numberOfLines = 1
+        titleLabel.numberOfLines = 2
 
         faviconView.contentMode = .scaleAspectFit
         faviconView.tintColor = .secondaryLabel
@@ -200,7 +202,8 @@ private final class TabCardCell: UICollectionViewCell {
         urlLabel.textColor = .secondaryLabel
         urlLabel.numberOfLines = 1
 
-        stateLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        stateLabel.font = .preferredFont(forTextStyle: .caption2)
+        stateLabel.adjustsFontForContentSizeCategory = true
         stateLabel.textColor = KiwiTheme.accentDeep
 
         var closeConfiguration = UIButton.Configuration.tinted()
@@ -210,8 +213,13 @@ private final class TabCardCell: UICollectionViewCell {
         closeConfiguration.baseBackgroundColor = UIColor.secondaryLabel.withAlphaComponent(0.12)
         closeConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)
         closeButton.configuration = closeConfiguration
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
         closeButton.accessibilityLabel = "Close tab"
         closeButton.addAction(UIAction { [weak self] _ in self?.onClose?() }, for: .touchUpInside)
+        NSLayoutConstraint.activate([
+            closeButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            closeButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
+        ])
 
         let titleRow = UIStackView(arrangedSubviews: [faviconView, titleLabel, closeButton])
         titleRow.axis = .horizontal
@@ -267,7 +275,9 @@ private final class TabCardCell: UICollectionViewCell {
         stateLabel.textColor = item.isPrivate ? KiwiTheme.privateAccent : KiwiTheme.accentDeep
         contentView.layer.borderColor = (item.isPrivate ? KiwiTheme.privateAccent : KiwiTheme.accentDeep).cgColor
         contentView.layer.borderWidth = isSelectedTab ? 2 : 0
+        closeButton.accessibilityLabel = "Close \(SafeInput.displayText(item.title, maximumByteCount: 256)) tab"
         accessibilityLabel = "\(titleLabel.text ?? "Tab"), \(urlLabel.text ?? "")"
+        accessibilityValue = statusText(for: item, isSelectedTab: isSelectedTab)
     }
 
     private func statusText(

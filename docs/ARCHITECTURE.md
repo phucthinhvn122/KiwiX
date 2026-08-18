@@ -1,239 +1,222 @@
-# ExtensionBrowser Architecture
+# KiwiX architecture and security contract
 
-Tài liệu này ghi lại các quyết định của MVP, boundary giữa các module, security model và giới hạn có chủ ý. `project.yml` cùng source Swift là nguồn sự thật khi tài liệu và implementation khác nhau.
+This document describes the implementation currently in this repository. `project.yml` and the Swift
+source remain authoritative. `DECISIONS.md` records a possible future migration to Apple's
+`WKWebExtension`; KiwiX does **not** currently claim that migration or Chrome compatibility is complete.
 
-## Mục tiêu và non-goals
-
-MVP cần chứng minh hai luồng chạy được:
+## Runtime shape
 
 ```text
-input URL/search -> WKWebView -> nhiều tab -> suspend/restore khi memory pressure
+Address/search input -> URLInputParser -> TabManager -> WKWebView
+                                      -> History / tabs / snapshots / downloads
 
-extension.zip -> validate -> preview quyền -> install/enable
-              -> match navigation -> inject JS/CSS -> chrome.* bridge giới hạn
+ZIP or folder -> bounded extractor -> manifest validator -> package identity
+              -> install confirmation -> ExtensionRepository
+              -> explicit grants -> content scripts / popup / native bridge
 ```
 
-Ưu tiên là native iOS behavior, thời gian chuyển tab, memory bounded, package validation và một CI không cần Mac local. MVP không nhằm thay WebKit bằng Chromium, tương thích toàn bộ Chrome Extension API, chạy native code từ extension hoặc phát hành App Store tự động.
+- `BrowserCore` owns navigation policy, the active web view, trusted browser chrome, dialogs, favicon
+  discovery/fetching, and the browser/extension boundary.
+- `Tabs` owns logical tab identity, the 50-tab global cap, normal-session restoration, snapshots, and
+  ACTIVE/WARM/SUSPENDED lifecycle planning.
+- `ExtensionKit` owns package validation, installed-tree integrity, declared/granted permissions,
+  content-script preparation, IPC routing, API quotas, and extension-local storage.
+- `ExtensionUI` owns provenance/permission confirmation, grant/revoke controls, extension actions, and
+  local-only popup rendering.
+- `History`, `Downloads`, `Settings`, and `Security` own their bounded stores and centralized policies.
 
-## Sơ đồ module
+The current extension runtime is deliberately small. Unsupported `chrome.*` methods fail closed; they
+are not silently shimmed.
 
-```mermaid
-flowchart TD
-    App["App bootstrap / Scene"] --> Browser["BrowserCore (UIKit + WKWebView)"]
-    Browser --> Tabs["Tabs (manager, lifecycle, snapshots, session)"]
-    Browser --> Features["Settings + History + Downloads"]
-    Browser --> Boundary["BrowserExtensionIntegration boundary"]
-    Boundary --> Runtime["ExtensionKit Runtime"]
-    UI["ExtensionUI (picker, preview, manager)"] --> Installer["Installer + Manifest validator"]
-    Installer --> Store["Per-extension files + metadata"]
-    Store --> Index["Compiled URL match cache"]
-    Index --> Runtime
-    Runtime --> Permissions["Permission + host gate"]
-    Runtime --> Storage["Namespaced chrome.storage.local"]
-    Runtime --> ContentWorld["WKContentWorld per extension"]
-    ContentWorld --> WebView["Page WKWebView"]
-    Runtime --> Boundary
-    Shared["Logging / diagnostics / signposts"] --> Browser
-    Shared --> Runtime
+## Browser profiles and private mode
+
+Normal tabs share the default `WKWebsiteDataStore`. Private tabs use a separate non-persistent data
+store and process pool; closing the last private tab replaces both and ends that in-memory private
+profile. Private tabs are excluded from session restoration, history, snapshots, favicon disk cache,
+extension configuration, and extension storage.
+
+Downloads are the intentional exception: a user may save a file from a private tab. Before starting,
+the UI states that the file remains on the device until deletion. Source/history metadata for a private
+download is not persisted. On a later launch an untracked saved file can be surfaced as a recovered
+download with no source URL, so it is not an invisible orphan.
+
+## Navigation and trusted UI
+
+- Address input is capped at 8,192 UTF-8 bytes. HTTP(S) URLs with credentials are rejected, malformed
+  scheme-like input is not leaked to a search provider, and custom search templates are validated.
+- Web content cannot launch an external scheme without a top-level, active-tab, foreground
+  `linkActivated` gesture. Known user-intent schemes are allowlisted; unknown schemes require another
+  native confirmation. Attempts are rate-limited per tab.
+- `target=_blank` creation requires the same active foreground gesture and is rate-limited. The global
+  tab cap still applies.
+- JavaScript alert/confirm/prompt UI uses the initiating `WKFrameInfo.request.url` origin, never a
+  document-controlled title. Messages/default input are byte-bounded; background, stacked, and
+  excessive dialogs are suppressed with safe completion values.
+- Error, private-mode, download, and permission states use native text and accessibility values rather
+  than color alone. Interactive controls target at least 44 points and custom text uses Dynamic Type.
+
+## Favicon network policy
+
+Favicon candidates are untrusted web input. Native fetching accepts only credential-free HTTP(S) URLs,
+forbids HTTPS downgrade, and validates the initial URL, every redirect, and the final URL. Hostnames are
+canonicalized and resolved off the main actor; resolution fails closed unless every returned address is
+public unicast. Loopback, unspecified, link-local, RFC1918/private, shared, benchmark, documentation,
+multicast, reserved, IPv4-mapped IPv6, ULA, and special-use local hostnames are rejected.
+
+The client uses an ephemeral credential/cookie/cache-free `URLSession`, a five-redirect limit, timeouts,
+streaming byte enforcement, and image dimension/pixel validation. Private tabs bypass the disk cache.
+
+Residual limitation: `URLSession` does not expose a supported way to pin the exact DNS answers used by
+its connection while preserving normal TLS hostname verification. KiwiX resolves immediately before
+each request/redirect and revalidates the final URL, which reduces DNS-rebinding risk but cannot remove
+the resolver-to-connect TOCTOU completely. Cross-origin favicon fetching should be reconsidered if a
+future platform API provides peer-address enforcement.
+
+## Extension installation and integrity
+
+Default package limits are 50 MiB compressed, 2,000 entries, 16 MiB per entry, 100 MiB expanded, and a
+250:1 compression-ratio threshold for large entries. ZIP and folder imports reject absolute/traversal
+paths, empty/dot components, backslashes, drive paths, NUL/control bytes, case/Unicode collisions,
+symlinks, unsupported objects, executable extensions, and native binary magic. CRC is checked while
+extracting, and staging is protected as temporary sensitive data.
+
+Manifest JSON is limited to 1 MiB and receives a depth/string preflight before Codable decoding.
+Manifest collections, strings, match patterns, resource references, and action metadata have explicit
+caps. Unknown API permissions are rejected.
+
+The package SHA-256 covers normalized relative paths, lengths, and file bytes; the first 128 bits form
+the extension ID. The install confirmation shows name, version, ID, local source, SHA-256, publisher
+state (`Not verified`), requested APIs/sites, and a prominent `<all_urls>` warning. Installation
+recomputes the staged identity. Every full repository scan/reload recomputes a bounded tree identity and
+checks the directory name, manifest, metadata, ID, and digest. Resource reads then reuse that verified
+in-process snapshot. The runtime manifest copy must match the package manifest byte-for-byte, so a
+metadata-preserving manifest substitution cannot bypass the package digest. This avoids a 100 MiB tree
+rehash for each referenced file. Package commit reuses the same bounded folder copier as import rather
+than recursively copying an unbounded tree. Repository enumeration has a hard inspection bound and
+fails closed if truncated; at most 128 extensions are installed by default. Repository mutations
+invalidate or replace the snapshot and trigger a full runtime reload. One corrupt extension is
+quarantined without hiding valid peers, and a later valid package with that ID may replace the
+quarantined directory.
+
+Packages are not signed and publisher identity is not authenticated. Hashes identify exact bytes only.
+
+## Permission contract
+
+Permission state separates:
+
+```text
+declared API capabilities
+persisted granted API capabilities
+declared host/content-script patterns
+persisted host grants (which may be narrower than declarations)
+temporary activeTab origin keyed by tab UUID
+enabled state
 ```
 
-Dependency direction quan trọng: browser không phụ thuộc trực tiếp vào UI extension. `BrowserExtensionIntegrating` và `BrowserExtensionHost` là boundary hẹp để runtime cấu hình `WKUserContentController`, nhận navigation events, query/create tab mà không đưa toàn bộ `TabManager` vào ExtensionKit.
+Install does not grant `<all_urls>`, broad hosts, `tabs`, or `scripting`. `storage` and `activeTab` may
+start enabled when declared: storage is quota-bound/namespaced, and activeTab remains inert until the
+user invokes the extension. Legacy metadata without grant fields migrates fail-closed.
 
-## Module ownership
+Extension Details offers Ask, Current Website, Selected Websites, and All Requested Websites. Selected
+domains are converted to conservative exact-host patterns that preserve the manifest scheme/path and
+must be subsets of a declaration. Domains can be added/removed. Enabling all requested access is a
+separate confirmation, with stronger text for `<all_urls>`. API capability grants are displayed and
+revoked separately with human-readable explanations.
 
-| Module | Trách nhiệm | Không nên chứa |
-|---|---|---|
-| `App` | Bootstrap window/scene, compose browser và extension runtime | Parsing ZIP, tab business logic |
-| `BrowserCore` | Browser view controller/view model, navigation UI, URL resolution, WKWebView lifecycle hooks | Extension storage/manifest parsing |
-| `Tabs` | Tab model, select/create/close/reorder, lifecycle plan, snapshot, session persistence | Toolbar/layout logic |
-| `ExtensionKit` | Install/validate/index/inject, permissions, bridge APIs, storage | UIKit presentation |
-| `ExtensionUI` | Files picker, install preview, list/details/toggle/remove | ZIP extraction trên main actor |
-| `Settings` | Search engine built-in/custom và debug UI | Browser rendering core |
-| `History` | Actor store JSON + UIKit list/clear/open; chỉ record tab thường | Extension hoặc private-tab state |
-| `Downloads` | `WKDownload` coordinator, progress, metadata store và file preview/delete | Private download không persist metadata; destination phải nằm trực tiếp trong Downloads directory |
-| `Shared` | Logging, signposts, diagnostics, integration protocols | Feature business logic lớn |
+Revocation updates the permission actor, immediately suspends bridge dispatch, rebuilds owned
+scripts/handlers, and reloads tracked normal web views so previously installed user scripts cannot
+silently survive. Reload requests are serialized; only the newest successful generation resumes bridge
+dispatch, and in-flight operations are cancelled before side effects. A failed repository reload clears
+prepared permissions, handlers, user scripts, idle jobs, and reloads tracked pages while leaving the
+bridge suspended; stale DOM-only scripts are not retained as a fallback. Future API calls and content
+scripts fail the new policy. A user-invoked extension action can create an activeTab grant only for the
+current normal tab/origin; it is revoked on navigation, tab close, disable, action failure, active-tab
+change, or revocation of the `activeTab` capability itself.
 
-## Browser core và WKWebView
+Declarative `content_scripts.matches` authorizes only that rule; it does not create programmatic host
+access. `exclude_matches` remains effective. `tabs` and `scripting` require their API grants, and script
+execution additionally requires a persisted programmatic host grant or matching activeTab grant.
 
-`BrowserViewController` giữ responsibility UI: address field, progress, toolbar, attach/detach view của tab đang chọn và present feature screens. `TabManager` giữ state/operations; controller không sở hữu toàn bộ business logic.
+## Content scripts, IPC, storage, and popup isolation
 
-`WebViewConfigurationProvider` tạo configuration theo privacy class:
+Each extension receives a named `WKContentWorld` and a native-owned message handler; identity comes
+from that handler/world, not message data. One owner-aware user-script registry composes browser,
+security, and per-extension scripts before the necessary WebKit-wide rebuild. A dedicated per-tab
+`document_idle` scheduler defers work after navigation finish, replaces stale jobs, and cancels/rechecks
+across commit, failure, and tab close.
 
-- Normal tabs chia sẻ `WKProcessPool` và `WKWebsiteDataStore.default()` để giữ session/cookie hợp lý.
-- Private tabs dùng process pool riêng và `WKWebsiteDataStore.nonPersistent()`.
-- Mỗi web view có `WKUserContentController` riêng, tránh handler/script của tab này rò sang tab khác.
-- Extension runtime chỉ được cấu hình cho normal tab. Private tab không đi qua integration point của extension trong MVP.
-- `WKWebView` chỉ được tạo khi tab cần live content; chuyển tab không tự động recreate web view.
+The JavaScript bridge accepts only a flat serialized JSON string. Native code checks its UTF-8 byte
+length, nesting, string length, and structural-token budget before `JSONSerialization` or recursive
+conversion; dictionary/object message bodies are rejected. Responses cross WebKit as bounded JSON
+strings and are parsed in JavaScript. Standard limits include 256 KiB incoming, 512 KiB outgoing,
+depth 16, 4,096 JSON nodes, 1,024 aggregate object members/array elements, 64 KiB strings, 20
+requests/second per extension/API/tab, 40-request extension bursts, eight outstanding per extension,
+four per extension/API, and a ten-second timeout. Completion accounting is idempotent.
 
-Address input được resolve theo thứ tự: URL HTTP/HTTPS explicit, hostname/IP/localhost suy luận với HTTPS, rồi search engine. `SearchEngine` dùng template `{query}` và validate scheme/host trước khi lưu custom engine.
+`tabs.create` also has a per-extension creation window and the browser-wide 50-tab cap.
+`scripting.executeScript` limits inline source, file count, each file, aggregate source, result size, and
+parallel executions; runtime content-script preparation also has a 16 MiB / 512-script aggregate budget
+across all enabled extensions, rather than multiplying a per-extension allowance. Script execution rechecks the
+live URL before and inside evaluation. Storage validates keys and
+values before merge, limits each operation, validates persisted JSON depth before decode, and enforces a
+5 MiB per-extension encoded quota. Oversized or malformed local storage is moved to a protected
+`local.corrupt-*.json` file and the namespace recovers empty; genuine read I/O failures remain errors.
 
-## Tab lifecycle và persistence
+Popups use a non-persistent store, load only files contained in the verified extension root, cancel
+non-file navigation, and install both a content-rule blocklist and locked JavaScript stubs for fetch,
+XHR, WebSocket, EventSource, workers, and sendBeacon. This is a deny-all network boundary; host grants
+do not currently enable popup network access.
 
-Ba state là giá trị dữ liệu thật, không chỉ nhãn UI:
+Content worlds are not DOM sandboxes: an authorized content script can read/change the matching page.
+The bridge supports Promise-style `runtime.sendMessage`, `storage.local`, `tabs.query/create`,
+`scripting.executeScript`, and `action.getTitle/setTitle`; background service workers, native messaging,
+webRequest/DNR, long-lived ports, and broad Chrome parity are unsupported.
 
-| State | Nội dung giữ lại | Hành vi |
-|---|---|---|
-| `ACTIVE` | live `WKWebView`, model, có thể có snapshot | Tab đang hiển thị và nhận interaction |
-| `WARM` | live `WKWebView` cho tối đa các tab background gần nhất | Chuyển lại nhanh, không reload |
-| `SUSPENDED` | metadata + snapshot + URL, release `WKWebView` | Hiện snapshot trước, tạo/load web view phía sau |
+## Downloads and persistence
 
-`TabLifecycleManager` là pure planner: chọn active tab, tối đa ba warm tabs gần nhất và phần còn lại suspended. Khi memory warning, chế độ aggressive đưa warm limit về 0 nhưng giữ active tab. `TabSnapshotManager` xử lý ảnh ngoài controller; `TabStore` là actor và ghi session JSON atomically với `schemaVersion` để dành chỗ cho migration.
+Downloads are capped at 500 MiB, warn at 50 MiB, reserve 250 MiB free space, and allow three concurrent
+transfers. Expected size is only an early rejection signal: progress and destination size are polled,
+unknown/chunked responses are bounded while downloading, and low-disk/oversize transfers are cancelled.
+WebKit writes to an internal hidden `.partial` path; only successful completion atomically moves it to a
+sanitized unique visible filename. Startup reconciliation fails interrupted records, removes their
+partials, marks missing completed files, deletes hidden orphan partials (including metadata-free private
+transfers), and surfaces bounded safe untracked completed files as recovered downloads.
 
-Private tabs không được đưa vào normal session persistence. Restore của MVP là URL/snapshot, không thể serialize JavaScript heap, form state hay toàn bộ `WKBackForwardList`; đây là giới hạn nền tảng cần thể hiện trong UX.
+Tab, history, download, extension, favicon, and snapshot stores bound file bytes/counts and normalize
+attacker-controlled strings/URLs before persistence. Externally influenced files use a streaming bounded
+reader, so growing a file after its metadata check cannot bypass the allocation limit. Malformed
+oversized tab/history records are quarantined or reset; corrupt extension storage and packages are
+isolated individually. Direct-child scans for extension and favicon directories are streaming and
+bounded rather than materializing arbitrary directory contents. Atomic writes are used for metadata.
 
-## Extension install pipeline
+Data protection is centralized:
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant UI as ExtensionUI
-    participant Installer
-    participant ZIP as SafeZIPExtractor
-    participant Manifest as ManifestParser
-    participant Store as ExtensionStore
-    participant Index as Match/Permission cache
+- browser state, metadata, extension files/storage, snapshots, and favicons:
+  `completeUntilFirstUserAuthentication`;
+- user downloads: `completeUnlessOpen`;
+- import staging/temporary sensitive files: `complete`.
 
-    User->>UI: Chọn .zip từ Files
-    UI->>Installer: prepareImport(url)
-    Installer->>ZIP: Validate toàn archive, rồi extract staging
-    ZIP-->>Installer: Files đã containment-check
-    Installer->>Manifest: Decode + validate Manifest V3
-    Installer->>Installer: SHA-256 deterministic identity
-    Installer-->>UI: Preview metadata + permissions
-    User->>UI: Confirm install
-    UI->>Store: Commit staging atomically
-    Store->>Index: Compile match rules + permissions một lần
-```
+These attributes require verification on a physical protected device; simulator/static inspection is
+not equivalent evidence.
 
-Archive được validate toàn bộ trước khi extract. Central directory được duyệt lazy và dừng ngay khi thấy entry thứ 2.001. Default limits hiện tại:
+## Concurrency and lifecycle
 
-| Limit | Giá trị |
-|---|---:|
-| ZIP đầu vào | 50 MiB |
-| Số entries | 2,000 |
-| Một entry sau giải nén | 16 MiB |
-| Tổng dung lượng sau giải nén | 100 MiB |
-| Compression ratio cho file lớn | 250:1 |
+UIKit/WebKit ownership stays on `@MainActor`. Persistence, permissions, request limiting, matching,
+storage, favicon brokerage/cache, and repositories use actors. Extension setting mutations and download
+metadata writes are serialized. Async work rechecks tab/web-view identity and URL after suspension;
+favicon requests and idle injection support cancellation. Late download callbacks are idempotently
+discarded after tracking is removed.
 
-Path được chuyển sang dạng forward-slash chuẩn và reject nếu absolute, có `..`/`.`/empty component, backslash, NUL, drive-letter Windows, tilde prefix, dài quá giới hạn hoặc thoát staging root sau standardization. Duplicate paths được so sánh case-insensitive + Unicode precomposition. Symlink bị reject. CRC được xác minh trong lúc extract và file output đặt permission không executable.
+Memory warnings snapshot and suspend background tabs. Favicon memory/disk caches, tab count, extension
+source preparation, images, payloads, storage, downloads, and persisted collections have explicit caps.
 
-File có extension native (`dylib`, `so`, `framework`, `bundle`, object/archive, executable/app/IPA...) bị reject; magic bytes Mach-O/fat binary, ELF và PE cũng bị kiểm tra sau extraction. Đây là defense-in-depth, không phải antivirus cho JavaScript độc hại.
+## CI and verification status
 
-Extension ID là 32 ký tự hex đầu của SHA-256 trên danh sách path/content canonical của package. Full digest được giữ trong metadata để phát hiện collision hoặc package khác dùng cùng ID. Mỗi extension có directory riêng chứa `manifest.json`/metadata, `files/` và `storage/`.
+`project.yml` is the Xcode project source. CI pins Xcode 16.4, XcodeGen 2.46.0 with checksum verification,
+third-party action commits, and ZIPFoundation 0.9.20. Private-API and ad-SDK scans run in repository
+scripts.
 
-## Manifest, matching và injection
-
-Parser chỉ chấp nhận Manifest V3. Optional fields có default an toàn; name/version/match/resource path được validate. Unknown API permission bị reject thay vì tạo cảm giác tương thích giả. Capability MVP: `activeTab`, `storage`, `tabs`, `scripting` cùng host match patterns.
-
-`WebExtensionMatchPattern` parse pattern thành scheme/host/path expression một lần. `<all_urls>`, exact host, `*.` subdomain, wildcard host/path và scheme được model hóa; `*://` chỉ mở rộng HTTP/HTTPS. `exclude_matches` luôn thắng include. `ExtensionMatchCache` actor giữ compiled content scripts theo extension ID, nên navigation không đọc/parse lại manifest.
-
-Injection policy:
-
-- Chỉ extension enabled và được host gate cho phép mới được inject.
-- Resource path luôn resolve bên dưới `files/` của extension.
-- JS/CSS phải là UTF-8; lỗi resource/evaluation được log/trả error thay vì crash browser.
-- `document_start`, `document_end`, `document_idle` map vào hook WebKit gần nhất mà runtime cung cấp. Timing của WebKit không phải bản sao tuyệt đối Chrome.
-- `all_frames` được parse để forward compatibility; main-frame là phạm vi đảm bảo của MVP.
-- Mỗi extension dùng logical `WKContentWorld` riêng, tách global JavaScript giữa page và các extension. Content world không ngăn script đọc/thay đổi DOM khi host permission đã được cấp.
-- Validator giới hạn 128 rules, 256 match/exclude patterns mỗi rule, 32 resource references mỗi rule và 256 references toàn extension. Source builder cache theo normalized path, giới hạn 4 MiB/resource và 16 MiB tổng source, đồng thời dựng/ghép source ngoài main actor.
-
-## Permission model
-
-Permission state tách declared capabilities, granted capabilities, explicit `host_permissions`, content-script-only match rules, active-tab origins và enabled state. Install UI hiển thị cả host permission lẫn site access từ `content_scripts.matches` trước confirm. Runtime phải qua `ExtensionPermissionManager` trước API nhạy cảm:
-
-- `storage` cho storage namespace của chính extension.
-- `tabs` cho query/create tab.
-- `scripting` cộng host access cho execute/inject.
-- `content_scripts.matches` chỉ cấp quyền cho declarative rule tương ứng; nó không được nâng thành host grant cho popup/programmatic `executeScript`, và `exclude_matches` luôn được áp dụng.
-- `activeTab` chỉ cấp origin hiện tại sau một user invocation rõ ràng; grant được revoke khi disable/navigation policy yêu cầu.
-- Host access phải match granted pattern hoặc active-tab origin.
-
-MVP grant các declared permissions sau khi user confirm package. Grant theo-domain/revoke UI chi tiết là roadmap.
-
-## `chrome.*` compatibility bridge
-
-Bridge JavaScript gửi envelope gồm extension identity, method và JSON-safe arguments qua `WKScriptMessageHandlerWithReply`. Native registry route theo tên method, validate sender/tab/permission, chạy service actor rồi resolve/reject Promise ở đúng content world. Callback-style Chrome API chưa được hỗ trợ. Page script không được coi extension ID tự khai báo là authority; identity phải gắn với handler/world mà native runtime đã tạo.
-
-API MVP hướng đến:
-
-- `chrome.runtime.sendMessage`, `chrome.runtime.onMessage`.
-- `chrome.storage.local.get/set/remove/clear`.
-- `chrome.tabs.query/create`.
-- `chrome.scripting.executeScript`.
-- `chrome.action.getTitle/setTitle` cho title runtime tạm thời. Popup provider render `default_popup` bằng non-persistent `WKWebView`, giới hạn navigation/file root và chặn remote subresources; action toolbar chưa được nối.
-
-Unsupported method phải trả `unsupportedAPI`; malformed args/permission failures dùng typed runtime errors. Mỗi extension storage dùng actor/file namespace riêng và atomic persistence, không trả đường dẫn native ra JavaScript.
-
-## Concurrency và main-thread policy
-
-- UIKit, `WKWebView`, navigation delegate và attach/detach views chạy trên `@MainActor`.
-- ZIP enumeration/extraction, hashing, manifest IO, extension index/storage, tab/history persistence chạy async hoặc trong actor/background task.
-- Actor ownership được dùng cho mutable cache/store; value models qua boundary là `Sendable` khi khả thi.
-- Không `Task.detached` tùy tiện với UIKit/WebKit object. Kết quả background quay lại main actor trước khi thay state UI.
-- File writes quan trọng dùng staging + atomic replace/write để tránh metadata nửa chừng khi app bị dừng.
-
-## Persistence và privacy
-
-Normal state được chia theo feature thay vì một database toàn cục:
-
-- Tab session JSON có schema version; snapshot là file riêng để không làm JSON phình lớn.
-- Browser settings nhỏ dùng `UserDefaults`; custom search engines encode Codable.
-- History dùng actor/file store riêng và browser chỉ record HTTP(S) khi tab thường hoàn tất navigation; private navigation không được ghi. Download store/UI chưa được implement.
-- Installed extension metadata/files/storage nằm tại `Documents/Extensions/<id>/` và tách directory theo deterministic extension ID; storage local nằm ở `storage/local.json`.
-- Website cookies/cache do normal `WKWebsiteDataStore.default()` quản lý; private data dùng non-persistent store.
-
-Không log page content, extension storage values, signing secrets hoặc raw message payload nhạy cảm trong Release.
-
-## Failure handling
-
-Boundary I/O trả typed/localized errors để UI có thể báo malformed manifest, corrupt ZIP, unsupported permission/API, missing resource hoặc injection failure. Navigation failure giữ browser shell sống. Một extension lỗi không được làm hỏng registry của extension khác. Startup bỏ qua/quarantine record không đọc được thay vì force-cast/crash; migration policy chi tiết sẽ được thêm khi schema thay đổi.
-
-## Performance và observability
-
-- `WKWebView` reuse theo tab state; không rebuild configuration mỗi view update.
-- URL match rules compile/cache khi load/install/toggle, không parse manifest theo navigation.
-- Snapshot xuất hiện trước restore để tránh màn hình trắng; cache được trim khi memory warning.
-- `OSLog` phân category (`app`, `browser`, `tabs`, `extensions`) và Release không spam console.
-- `os_signpost` cung cấp điểm mở rộng cho startup, navigation, tab switch, matching và injection; Debug diagnostics đếm live web views, navigation và memory warnings.
-
-Các metric cần profile trên thiết bị thật: p50/p95 tab-switch latency, time-to-first-content sau restore, match/injection duration, live web-view count và memory footprint theo số tab.
-
-## Build system và CI
-
-`project.yml` là cấu hình tái tạo project. XcodeGen được pin `2.46.0` với SHA-256 của release binary; project generated bị ignore. Hai workflow độc lập:
-
-- Simulator: generate, chọn device có thật, unit test, Release simulator build, kiểm tra/zip `.app`, optional Appetize.
-- Device: unsigned `xcarchive` + structurally packaged unsigned IPA luôn có; signed archive/export chỉ khi đủ sáu secrets. Partial signing configuration làm job fail rõ ràng sau khi unsigned artifact được upload.
-
-`ExportOptions.plist` được generate bằng `plistlib` với allowlist method `development`/`ad-hoc`. Signing file nằm trong runner temp/keychain tạm, không thuộc repository, và được cleanup best-effort ở cuối job.
-
-## Test strategy
-
-Pure/value/actor logic được ưu tiên unit test không cần UI automation:
-
-- URL input và search templates.
-- Tab lifecycle plan, session schema và private filtering.
-- Manifest defaults/validation/version/permissions.
-- Match pattern include/exclude và rule cache.
-- Resource/ZIP path traversal, duplicate/symlink/native magic và security limits.
-- Deterministic identity, install collision/rollback.
-- Permission and host authorization.
-- Storage namespace/atomic persistence và API registry argument routing.
-
-GitHub Actions `xcodebuild test` trên iPhone Simulator là compile/test authority. Windows chỉ có thể kiểm tra JSON/YAML/scripts; không được coi đó là thay thế cho Apple SDK build.
-
-## Known limitations và quyết định hoãn
-
-1. WebKit là engine bắt buộc; compatibility không đồng nghĩa Chrome/Kiwi parity.
-2. Không service worker/background page, declarativeNetRequest/webRequest, native messaging, binary module hay Chrome Web Store integration.
-3. Action toolbar/lifecycle popup hoàn chỉnh, iframe/all-frames injection, callback APIs và long-lived runtime ports chưa nằm trong success criteria MVP.
-4. Content-world isolation tách JS globals nhưng DOM vẫn là shared surface; extension có host access có thể quan sát/sửa page DOM.
-5. Tab restore không khôi phục JS heap/form/back-forward list đầy đủ.
-6. Private mode cố ý disable extension; UI opt-in riêng chỉ nên thêm sau audit.
-7. Signing phụ thuộc external Apple assets/profile/registered devices. Unsigned IPA chỉ là input cho re-sign, không phải artifact cài trực tiếp.
-8. Không thể compile iOS trên Windows; lần chạy CI macOS đầu tiên vẫn là bước xác nhận bắt buộc.
-9. History đã có store/UI; Downloads đã dùng `WKDownload` và màn hình quản lý file. Favicon mới chỉ có candidate URL, chưa fetch/render.
-
-## Điều kiện mở rộng sau MVP
-
-Trước khi tăng compatibility surface, cần ưu tiên: fuzz installer/parser, domain-grant UI, message sender authentication tests, extension update rollback/migration, popup isolation, per-extension resource quotas và device profiling. Mỗi API mới phải có permission mapping, typed argument validation, failure contract, storage/privacy impact và test trước khi đăng ký vào bridge.
+The hardening changes can be statically inspected on Windows, but Windows has no Apple SDK, WebKit, or
+iOS simulator. A green macOS `xcodebuild test`, Release build, and device checks for data protection,
+VoiceOver, memory, and WebKit network behavior remain required release evidence. Do not mark those
+runtime gates passed based on source parsing alone.

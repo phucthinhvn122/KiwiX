@@ -46,4 +46,24 @@ final class MatchPatternTests: XCTestCase {
         XCTAssertThrowsError(try WebExtensionMatchPattern("https://foo.*.example.com/*"))
         XCTAssertThrowsError(try WebExtensionMatchPattern("https://example.com:443/*"))
     }
+
+    func testNarrowedWebsiteGrantRemainsWithinDeclaredPattern() throws {
+        let declared = try WebExtensionMatchPattern("https://*.example.com/account/*")
+        let narrowed = try XCTUnwrap(declared.narrowed(toHostname: "docs.example.com"))
+
+        XCTAssertEqual(narrowed.source, "https://docs.example.com/account/*")
+        XCTAssertTrue(declared.encompasses(narrowed))
+        XCTAssertFalse(narrowed.encompasses(declared))
+        XCTAssertNil(declared.narrowed(toHostname: "notexample.com"))
+        XCTAssertFalse(declared.encompasses(try WebExtensionMatchPattern("https://docs.example.com/*")))
+    }
+
+    func testAllURLsCanBeNarrowedWithoutGrantingFileOrOtherHosts() throws {
+        let declared = try WebExtensionMatchPattern("<all_urls>")
+        let narrowed = try XCTUnwrap(declared.narrowed(toHostname: "example.com"))
+        XCTAssertEqual(narrowed.source, "*://example.com/*")
+        XCTAssertTrue(narrowed.matches(try XCTUnwrap(URL(string: "https://example.com/page"))))
+        XCTAssertFalse(narrowed.matches(try XCTUnwrap(URL(string: "https://other.test/page"))))
+        XCTAssertFalse(narrowed.matches(try XCTUnwrap(URL(string: "file:///tmp/page"))))
+    }
 }

@@ -136,7 +136,7 @@ final class ExtensionActionCoordinator {
         enabledExtensionIDs: Set<ExtensionIdentifier>
     ) async throws -> [BrowserExtensionActionDescriptor] {
         guard isCurrentNormalTab(tab) else { return [] }
-        let installed = try await repository.installedExtensions()
+        let installed = try await repository.verifiedExtensionsSnapshot()
         guard isCurrentNormalTab(tab) else { return [] }
 
         var result: [BrowserExtensionActionDescriptor] = []
@@ -149,15 +149,19 @@ final class ExtensionActionCoordinator {
                 fallback: item.manifest.action?.defaultTitle ?? item.metadata.name
             )
             let iconData: Data?
-            if let iconPath = ExtensionActionMetadata.iconPath(for: item.manifest),
-               let encodedData = try? await repository.resourceData(
+            if let iconPath = ExtensionActionMetadata.iconPath(for: item.manifest) {
+                let encodedData = try? await repository.resourceData(
                     extensionID: item.id,
                     path: iconPath,
                     maximumBytes: Self.maximumIconBytes
-               ) {
-                iconData = await Task.detached(priority: .utility) {
-                    ExtensionActionMetadata.sanitizedIconData(encodedData)
-                }.value
+                )
+                if let encodedData {
+                    iconData = await Task.detached(priority: .utility) {
+                        ExtensionActionMetadata.sanitizedIconData(encodedData)
+                    }.value
+                } else {
+                    iconData = nil
+                }
             } else {
                 iconData = nil
             }

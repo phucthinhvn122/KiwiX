@@ -4,9 +4,9 @@ import WebKit
 @MainActor
 final class WebViewConfigurationProvider {
     private let normalProcessPool = WKProcessPool()
-    private let privateProcessPool = WKProcessPool()
+    private var privateProcessPool = WKProcessPool()
     private let normalDataStore = WKWebsiteDataStore.default()
-    private let privateDataStore = WKWebsiteDataStore.nonPersistent()
+    private var privateDataStore = WKWebsiteDataStore.nonPersistent()
     private let extensionBridge: BrowserExtensionBridge
 
     init(extensionBridge: BrowserExtensionBridge? = nil) {
@@ -34,6 +34,11 @@ final class WebViewConfigurationProvider {
 
         return configuration
     }
+
+    func resetPrivateProfile() {
+        privateProcessPool = WKProcessPool()
+        privateDataStore = WKWebsiteDataStore.nonPersistent()
+    }
 }
 
 @MainActor
@@ -60,5 +65,9 @@ final class WebViewFactory {
         #endif
 
         return webView
+    }
+
+    func resetPrivateProfile() {
+        configurationProvider.resetPrivateProfile()
     }
 }

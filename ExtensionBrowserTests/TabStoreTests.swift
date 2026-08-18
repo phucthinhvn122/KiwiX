@@ -40,4 +40,22 @@ final class TabStoreTests: XCTestCase {
         let restoredSession = try await store.load()
         XCTAssertEqual(restoredSession, session)
     }
+
+    func testDeepSessionJSONIsQuarantinedBeforeDecode() async throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ExtensionBrowserTests-\(UUID().uuidString)", isDirectory: true)
+        let fileURL = temporaryDirectory.appendingPathComponent("Tabs.json")
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let hostile = String(repeating: "[", count: 40) + "0" + String(repeating: "]", count: 40)
+        try Data(hostile.utf8).write(to: fileURL)
+        let store = TabStore(fileURL: fileURL)
+
+        do {
+            _ = try await store.load()
+            XCTFail("Expected deeply nested session JSON to fail")
+        } catch {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+        }
+    }
 }

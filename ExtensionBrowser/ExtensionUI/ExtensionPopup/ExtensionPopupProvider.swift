@@ -39,6 +39,12 @@ public final class DefaultExtensionPopupProvider: ExtensionPopupProviding {
         configuration.websiteDataStore = .nonPersistent()
         let controller = WKUserContentController()
         controller.add(try await Self.remoteResourceBlocklist())
+        controller.addUserScript(WKUserScript(
+            source: ExtensionPopupNetworkIsolation.javaScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false,
+            in: .page
+        ))
         configuration.userContentController = controller
         let name = "extensionPopupBridge_\(extensionID.rawValue)"
         let handler = ExtensionScriptMessageHandler(extensionID: extensionID, tabID: tabID, registry: registry)
@@ -56,11 +62,11 @@ public final class DefaultExtensionPopupProvider: ExtensionPopupProviding {
 
     private static func remoteResourceBlocklist() async throws -> WKContentRuleList {
         if let cachedRemoteResourceBlocklist { return cachedRemoteResourceBlocklist }
-        let source = #"[{"trigger":{"url-filter":"^https?://"},"action":{"type":"block"}}]"#
+        let source = ExtensionPopupNetworkIsolation.blockedSchemesRuleList
         let ruleList = try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<WKContentRuleList, Error>) in
             WKContentRuleListStore.default().compileContentRuleList(
-                forIdentifier: "ExtensionBrowser.Popup.LocalResourcesOnly.v1",
+                forIdentifier: "ExtensionBrowser.Popup.LocalResourcesOnly.v2",
                 encodedContentRuleList: source
             ) { ruleList, error in
                 if let ruleList {

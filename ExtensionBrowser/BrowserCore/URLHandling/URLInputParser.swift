@@ -21,11 +21,14 @@ struct URLInputParser: URLInputResolving {
 
     func resolve(_ input: String) -> URLInputResolution? {
         let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return nil }
+        guard !value.isEmpty, value.utf8.count <= SafePersistence.maximumURLBytes else { return nil }
 
         if let explicitURL = explicitWebURL(from: value) {
             return .url(explicitURL)
         }
+        // A malformed explicit URL must not be sent to the configured search provider, where
+        // embedded credentials or secrets could leak as a query.
+        if value.contains("://") { return nil }
 
         if let inferredURL = inferredWebURL(from: value) {
             return .url(inferredURL)
@@ -43,6 +46,8 @@ struct URLInputParser: URLInputResolving {
         guard let components = URLComponents(string: value),
               let scheme = components.scheme?.lowercased(),
               ["http", "https"].contains(scheme),
+              components.user == nil,
+              components.password == nil,
               let host = components.host,
               isPlausible(host: host),
               components.url != nil else {

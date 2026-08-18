@@ -1,47 +1,53 @@
-# Risk register — KiwiX / ExtensionBrowser v3
+# KiwiX risk register
 
-Trạng thái: **ĐÃ CHẤP NHẬN LÀM BASELINE — cập nhật theo milestone**
-Cập nhật: 2026-08-17
+Updated: 2026-08-18. Probability (P) and impact (I) use a 1–5 scale. “Residual” means source
+mitigations exist but runtime or platform evidence is still required.
 
-Thang điểm: xác suất (P) và tác động (I) từ 1–5; mức ưu tiên = P × I.
-
-| ID | Rủi ro | P | I | Ưu tiên | Biện pháp bắt buộc | Bằng chứng đóng rủi ro |
-|---|---|---:|---:|---:|---|---|
-| R-01 | Extension độc hại đọc/sửa dữ liệu trên site được cấp quyền | 4 | 5 | 20 | Permission preview trước install; cảnh báo nổi bật cho `<all_urls>`; grant/revoke theo host; mặc định tắt private; không log URL | UI/integration test grant-revoke và review threat model |
-| R-02 | CRX3 tải ngoài không được xác minh chữ ký/origin nhưng người dùng hiểu nhầm là đáng tin | 4 | 5 | 20 | Không gắn nhãn “verified”; hiển thị source + SHA-256; xác nhận hai bước; lưu provenance; quarantine package lỗi | Test tampered package và ảnh chụp warning flow |
-| R-03 | Tải trực tiếp từ Chrome Web Store/AMO vi phạm hoặc bị chặn bởi ToS/endpoint thay đổi | 4 | 4 | 16 | Legal/ToS review trước ship; chỉ user-initiated; feature flag/kill switch; không scrape bằng credential; file import luôn là fallback | Biên bản review và integration test fallback |
-| R-04 | App Store Review Guideline 2.5.2 cấm download/install/execute code làm thay đổi chức năng | 5 | 5 | 25 | App Store là non-goal v1; sideload-only; không xem public WebKit API là miễn trừ policy; review lại trước bất kỳ submission/notarization nào | Quyết định phân phối và policy review cập nhật |
-| R-05 | Apple Account miễn phí làm app hết hạn sau 7 ngày | 5 | 4 | 20 | Khuyến nghị Developer Program; nếu dùng AltStore/SideStore phải hiển thị ngày hết hạn và runbook refresh | Sideload/refresh drill trên thiết bị |
-| R-06 | `WKWebExtension` mới, hành vi/API surface đổi giữa bản iOS | 4 | 4 | 16 | Ma trận OS; pin Xcode trong CI sau baseline; harness chạy trên mỗi OS hỗ trợ; compatibility report theo build OS | Artifact harness theo từng runtime |
-| R-07 | Extension mục tiêu phụ thuộc API WebKit không hỗ trợ hoặc semantics khác Chrome/Firefox | 5 | 4 | 20 | Không shim âm thầm; probe hành vi; ghi `COMPATIBILITY.md`; ưu tiên DNR; unsupported có lý do rõ | E2E cho 4 extension mục tiêu trên thiết bị |
-| R-08 | Tab adapter sai identity/event ordering khi suspend/resume gây lỗi `tabs.*` | 4 | 5 | 20 | Registry adapter ổn định theo UUID; suspend không phát close/open; test event trace; mọi controller callback trên MainActor | Unit + integration event-order tests |
-| R-09 | Extension page cần configuration riêng; dùng nhầm web view làm navigation fail | 3 | 5 | 15 | Dùng `WKWebExtensionContext.webViewConfiguration` cho extension-origin page; swap web view khi đi vào/ra origin extension; test popup/options | Popup/options navigation tests |
-| R-10 | Private data rò sang normal profile hoặc extension chạy trong private ngoài ý muốn | 3 | 5 | 15 | Data store/controller non-persistent riêng; deny-by-default; không persist private tab/history; test process restart | Privacy integration suite |
-| R-11 | ZIP/XPI/CRX gây path traversal, zip bomb hoặc resource exhaustion | 4 | 5 | 20 | Giữ lại validator/extraction limits hiện có sau review; giải nén off-main; reject symlink/duplicate/absolute/`..`; quota file/count/size | Unit/fuzz corpus và peak-memory test |
-| R-12 | Gỡ runtime cũ làm hỏng app shell đang dùng chung integration boundary | 4 | 4 | 16 | Migration theo vertical slice; inventory dependency; không bulk-delete trước build xanh; giữ test tab/history độc lập | CI xanh sau từng slice |
-| R-13 | Không có môi trường Apple nên tài liệu bị nhầm thành bằng chứng runtime | 5 | 5 | 25 | Mọi kết quả chưa chạy ghi `CHƯA CHẠY`; không ký DoD trên Windows; yêu cầu `.xcresult`/JSON artifact và device metadata | CI/device artifact hợp lệ |
-| R-14 | Unsigned IPA artifact bị hiểu nhầm là cài trực tiếp được | 4 | 3 | 12 | Tên artifact và docs ghi rõ unsigned; signed output chỉ tạo khi profile/cert validate; test IPA structure và signature | CI summary + `codesign --verify` |
-| R-15 | URL/source extension lọt vào analytics/log hoặc crash report | 3 | 5 | 15 | Structured log chỉ dùng extension ID/hash và error category; redact URL; analytics opt-in; audit log statements | Static scan + privacy test |
-| R-16 | DNR/EasyList compile/apply làm block main thread, tăng RAM | 4 | 4 | 16 | Native content blocker độc lập; compile off-main; cache theo hash; signpost; regression >15% fail | Benchmark artifact trên iPhone 12+ |
-| R-17 | Direct update thay package đang chạy gây corruption hoặc rollback khó | 3 | 5 | 15 | Download staging; validate/load thử; atomic directory swap; giữ một bản rollback; serialize update/uninstall | Fault-injection tests |
-
-## Policy notes
-
-- [App Review Guideline 2.5.2](https://developer.apple.com/app-store/review/guidelines/) hiện nói app không được
-  tải/cài/chạy code làm thay đổi feature/functionality, trừ ngoại lệ hẹp. V1 không nhắm App Store.
-- [Chrome Web Store Terms](https://developer.chrome.com/docs/webstore/program-policies/terms) và
-  [Mozilla Add-ons policies](https://extensionworkshop.com/documentation/publish/add-on-policies/) phải được
-  legal/product owner kiểm tra ở thời điểm triển khai one-click; kỹ thuật không tự tuyên bố compliance.
-- AltStore Classic ghi rõ app sideload hết hạn sau 7 ngày; đây là giới hạn vận hành, không chỉ là UX nhỏ.
+| ID | Risk | P | I | Mitigation in this repository | Residual / closure evidence |
+|---|---|---:|---:|---|---|
+| R-01 | Favicon SSRF reaches localhost, LAN, or metadata services | 2 | 5 | Public-unicast DNS/IP policy; initial, redirect, and final URL checks; ephemeral credential-free streaming client | `URLSession` DNS-to-connect TOCTOU remains; close with macOS redirect/DNS tests and platform support for peer-address enforcement |
+| R-02 | A page launches another app or floods native UI | 2 | 4 | Active top-level foreground gesture requirement, allowlist/confirmation, per-tab rate limits; origin-labelled bounded JS dialogs | UI integration tests on device, including iframe and background cases |
+| R-03 | Untrusted extension package escapes staging or exhausts memory/disk | 2 | 5 | ZIP/folder file-count, byte, ratio, path, symlink, duplicate, CRC, and native-binary checks; bounded identity hashing | Fuzz corpus and peak-memory measurements on Apple runtime |
+| R-04 | User mistakes an unsigned local extension for a verified publisher | 3 | 5 | Import UI says “Unverified”, publisher “Not verified”, and shows source, ID, SHA-256, APIs, and sites | Package signatures/trust store are not implemented; hashes prove bytes, not authorship |
+| R-05 | Broad host/API access is silently granted or survives revoke | 2 | 5 | Declared/granted split, fail-closed migration, no default broad grants, selected-site subset validation, separate `<all_urls>` warning, immediate bridge suspension, generation-serialized rebuild/reload, in-flight cancellation; failed reload clears old scripts/handlers and reloads pages | Device UI + WebKit integration test must prove existing pages and iframe scripts stop after revoke |
+| R-06 | Temporary activeTab access crosses tab/navigation/private boundaries | 2 | 5 | Grant keyed by tab UUID + origin after explicit action; revoke on navigation, close, disable, active-tab change, and action failure; extensions disabled in private | Navigation/action race tests on device |
+| R-07 | Malicious extension floods IPC, tabs, scripts, or storage | 2 | 5 | Flat-string IPC with byte/depth/token preflight before JSON decode, request/outstanding/time limits, idempotent tokens, tab/rate caps, script/source/result/parallel limits, storage prevalidation/quota | Stress tests and memory graph on iPhone; a handler that ignores cancellation remains fail-closed but can occupy its bounded slot |
+| R-08 | Popup bypasses host policy to reach the network | 2 | 5 | File-root-only navigation, non-persistent store, content-rule HTTP/WS/FTP block, locked fetch/XHR/WebSocket/EventSource/worker/beacon stubs | WebKit implementation behavior needs device network-capture tests; popup networking is intentionally deny-all |
+| R-09 | Download ignores declared length, fills disk, or leaves invisible partials | 2 | 5 | 500 MiB streaming cap, free-space reserve, progress/file polling, concurrency cap, hidden partial + atomic finalization, cancel cleanup, startup reconciliation/recovery | Exercise unknown-length, chunked, redirect, cancellation, and app-termination cases with a controlled server |
+| R-10 | Corrupt persisted data crashes startup or hides healthy data | 2 | 4 | Streaming bounded file/direct-child reads, extension-count and repository inspection caps, pre-decode checks, atomic writes, tab/history reset/quarantine, per-extension package/storage quarantine, download reconciliation | Fault-injection suite still needs Apple runtime coverage for file-coordination and protection errors |
+| R-11 | Private browsing leaks normal-profile state | 2 | 5 | Separate non-persistent WebKit profile reset after the last private tab closes; no extension config, history, tab restore, snapshots, or favicon disk cache; private metadata omitted | Saved download files intentionally persist after an explicit warning; process-restart privacy test required |
+| R-12 | Sensitive files are readable while device is locked | 2 | 5 | Central protection classes for browser state, downloads, and temporary staging; recursive protection after install | File protection semantics cannot be proven on Windows/simulator; verify on a passcode-protected device |
+| R-13 | Async callbacks mutate stale tabs/UI or complete twice | 2 | 4 | MainActor WebKit/UI ownership, actor stores, serialized UI mutations/persistence, identity/URL rechecks, cancellation, idempotent download/request tracking | Thread Sanitizer and rapid interaction tests on macOS/device |
+| R-14 | Logs disclose browsing URLs, paths, or extension content | 2 | 4 | OSLog dynamic error details are private; persistent models strip credentials and bound text; no analytics SDK | Static scan plus privacy inspection of device logs/crash reports |
+| R-15 | Source-only review is mistaken for a successful iOS release | 4 | 5 | Documentation explicitly marks Apple build/device gates; CI pins Xcode and action commits; private-API/ad-SDK guards | Close only with green `.xcresult`, Release archive, signed-device run, VoiceOver, memory, and network evidence |
+| R-16 | Current custom extension bridge is assumed to provide Chrome parity | 4 | 4 | Small allowlisted API surface; unknown permissions/APIs fail closed; architecture names unsupported areas | Publish compatibility results per OS/device; future `WKWebExtension` migration is a separate decision, not implemented evidence |
+| R-17 | Distribution violates platform/store policy or signing expectations | 3 | 5 | Unsigned/signed artifacts are labelled separately; no App Store compatibility claim | Product/legal review and valid signing/provisioning are required before distribution outside development |
 
 ## Stop-ship conditions
 
-Không phát hành IPA test cho người dùng ngoài nhóm phát triển nếu có một trong các điều kiện:
+Do not distribute a build outside the development team when any of these is true:
 
-- package không rõ provenance được cài mà không có cảnh báo/xác nhận hai bước;
-- permission `<all_urls>` bị grant mặc định hoặc không revoke được;
-- private tab dùng chung persistent controller/data store với normal tab;
-- report API được đánh dấu pass nhưng không có artifact runtime;
-- signing/profile không khớp bundle ID hoặc IPA chỉ là unsigned package;
-- private API scan thất bại;
-- crash/data corruption khi update hoặc uninstall extension.
+- a known High/Critical trust-boundary bypass is open;
+- localhost/LAN favicon fetching, automatic external-scheme launch, or popup network escape is reproducible;
+- `<all_urls>` is granted on install, cannot be revoked, or content scripts ignore the effective grant;
+- private tabs persist browser/extension state other than the explicitly disclosed downloaded file;
+- unknown-length downloads can exceed the byte/disk policy or leave tracked partial files;
+- a malformed package/store record can crash startup or execute after integrity failure;
+- private-API/ad-SDK scans fail;
+- macOS build/tests are red or have not run for the candidate commit;
+- signing/profile identity does not match the shipped app;
+- required device checks for file protection, VoiceOver, memory, and WebKit behavior lack evidence.
+
+## Accepted product limitations
+
+- Extension packages are local and unsigned. Publisher verification and automatic updates are absent.
+- Authorized content scripts can read/change matching DOM; `WKContentWorld` isolates globals, not DOM.
+- Popup network access is deny-all rather than a complete Chrome network-permission implementation.
+- Failed `WKDownload` resume data is intentionally discarded; resumable download UI is not implemented.
+- Background workers, webRequest/DNR, native messaging, long-lived ports, and broad Chrome compatibility
+  are not supported.
+- A private download file persists because the user explicitly saves it; the UI warns before starting and
+  metadata does not preserve its private source URL.
+- Installed extension bytes are fully reverified on repository scans/reloads, then cached for the
+  process lifetime between repository mutations. Out-of-band sandbox tampering after a scan is detected
+  at the next scan rather than by rehashing the full tree before every resource read.

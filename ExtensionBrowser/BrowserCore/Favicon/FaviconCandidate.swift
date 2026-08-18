@@ -9,34 +9,10 @@ struct FaviconCandidate: Equatable, Sendable {
 }
 
 enum FaviconURLPolicy {
-    static let maximumURLByteCount = 8_192
+    static let maximumURLByteCount = NetworkDestinationPolicy.maximumURLByteCount
 
     static func validatedRemoteURL(_ url: URL, relativeTo pageURL: URL? = nil) -> URL? {
-        guard url.absoluteString.utf8.count <= maximumURLByteCount,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              url.user == nil,
-              url.password == nil,
-              let host = url.host,
-              !host.isEmpty else {
-            return nil
-        }
-
-        if pageURL?.scheme?.lowercased() == "https", scheme != "https" {
-            return nil
-        }
-
-        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else {
-            return nil
-        }
-        components.scheme = scheme
-        components.host = host.lowercased()
-        components.fragment = nil
-        guard let resolved = components.url?.absoluteURL,
-              resolved.absoluteString.utf8.count <= maximumURLByteCount else {
-            return nil
-        }
-        return resolved
+        try? NetworkDestinationPolicy.normalizedHTTPURL(url, relativeTo: pageURL)
     }
 
     static func fallbackURL(for pageURL: URL) -> URL? {
@@ -92,18 +68,21 @@ enum FaviconCandidateParser {
 
     /// The result is JSON-compatible and intentionally contains attributes only, never page content.
     static let discoveryJavaScript = """
-    (() => Array.from(document.querySelectorAll('link[rel]'))
+    (() => {
+      const bounded = (value, length) => String(value || '').slice(0, length);
+      return Array.from(document.querySelectorAll('link[rel]'))
       .slice(0, 64)
       .map((link) => ({
-        href: link.getAttribute('href') || '',
-        rel: link.getAttribute('rel') || '',
-        type: link.getAttribute('type') || '',
-        sizes: link.getAttribute('sizes') || ''
+        href: bounded(link.getAttribute('href'), 4096),
+        rel: bounded(link.getAttribute('rel'), 256),
+        type: bounded(link.getAttribute('type'), 128),
+        sizes: bounded(link.getAttribute('sizes'), 256)
       }))
       .filter((item) => item.rel.toLowerCase().split(/\\s+/).some((token) =>
         token === 'icon' || token === 'apple-touch-icon' || token === 'apple-touch-icon-precomposed'
       ))
-      .slice(0, 32))()
+      .slice(0, 32);
+    })()
     """
 
     static func candidates(

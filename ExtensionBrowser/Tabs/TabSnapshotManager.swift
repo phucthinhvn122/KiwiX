@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import UIKit
 import WebKit
 
@@ -12,18 +13,35 @@ actor TabSnapshotStore {
     }
 
     func save(_ data: Data, fileName: String) throws {
+        guard data.count <= SafePersistence.maximumSnapshotBytes else {
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
         let directory = try snapshotDirectory(create: true)
-        try data.write(to: directory.appendingPathComponent(fileName), options: [.atomic])
+        guard let url = SafePersistence.containedSnapshotURL(fileName: fileName, directory: directory) else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        try data.write(to: url, options: [.atomic])
+        try AppDataProtectionPolicy.apply(to: url, category: .browserState, fileManager: fileManager)
     }
 
     func load(fileName: String) throws -> Data? {
-        let url = try snapshotDirectory(create: false).appendingPathComponent(fileName)
+        let directory = try snapshotDirectory(create: false)
+        guard let url = SafePersistence.containedSnapshotURL(fileName: fileName, directory: directory) else {
+            throw CocoaError(.fileReadInvalidFileName)
+        }
         guard fileManager.fileExists(atPath: url.path) else { return nil }
-        return try Data(contentsOf: url)
+        return try? BoundedFileReader.read(
+            from: url,
+            maximumByteCount: SafePersistence.maximumSnapshotBytes,
+            fileManager: fileManager
+        )
     }
 
     func remove(fileName: String) throws {
-        let url = try snapshotDirectory(create: false).appendingPathComponent(fileName)
+        let directory = try snapshotDirectory(create: false)
+        guard let url = SafePersistence.containedSnapshotURL(fileName: fileName, directory: directory) else {
+            throw CocoaError(.fileReadInvalidFileName)
+        }
         guard fileManager.fileExists(atPath: url.path) else { return }
         try fileManager.removeItem(at: url)
     }
@@ -55,6 +73,33 @@ actor TabSnapshotStore {
     }
 }
 
+private enum TabSnapshotImageDecoder {
+    static let maximumDimension = 4_096
+    static let maximumPixelCount = 8_388_608
+    static let renderedMaximumDimension = 1_024
+
+    static func image(from data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) == 1,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              width > 0, height > 0,
+              width <= maximumDimension, height <= maximumDimension,
+              width <= maximumPixelCount / height else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: renderedMaximumDimension,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        return UIImage(cgImage: image)
+    }
+}
+
 @MainActor
 final class TabSnapshotManager {
     private let store: TabSnapshotStore
@@ -78,7 +123,7 @@ final class TabSnapshotManager {
         let image: UIImage? = await withCheckedContinuation { continuation in
             webView.takeSnapshot(with: configuration) { image, error in
                 if let error {
-                    AppLog.tabs.error("Tab snapshot failed: \(error.localizedDescription, privacy: .public)")
+                    AppLog.tabs.error("Tab snapshot failed: \(error.localizedDescription, privacy: .private)")
                 }
                 continuation.resume(returning: image)
             }
@@ -96,7 +141,7 @@ final class TabSnapshotManager {
             try await store.save(data, fileName: fileName)
             tab.snapshotFileName = fileName
         } catch {
-            AppLog.tabs.error("Could not persist tab snapshot: \(error.localizedDescription, privacy: .public)")
+            AppLog.tabs.error("Could not persist tab snapshot: \(error.localizedDescription, privacy: .private)")
         }
         return image
     }
@@ -105,9 +150,9 @@ final class TabSnapshotManager {
         guard !tab.isPrivate, let fileName = tab.snapshotFileName else { return }
         do {
             guard let data = try await store.load(fileName: fileName) else { return }
-            tab.snapshot = UIImage(data: data)
+            tab.snapshot = TabSnapshotImageDecoder.image(from: data)
         } catch {
-            AppLog.tabs.error("Could not load tab snapshot: \(error.localizedDescription, privacy: .public)")
+            AppLog.tabs.error("Could not load tab snapshot: \(error.localizedDescription, privacy: .private)")
         }
     }
 
@@ -118,7 +163,7 @@ final class TabSnapshotManager {
         do {
             try await store.remove(fileName: fileName)
         } catch {
-            AppLog.tabs.error("Could not delete tab snapshot: \(error.localizedDescription, privacy: .public)")
+            AppLog.tabs.error("Could not delete tab snapshot: \(error.localizedDescription, privacy: .private)")
         }
     }
 }

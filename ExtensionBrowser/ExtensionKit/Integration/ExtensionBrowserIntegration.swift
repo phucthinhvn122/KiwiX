@@ -13,11 +13,13 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
     private final class ControllerRecord {
         weak var controller: WKUserContentController?
         let context: BrowserExtensionTabContext
+        let scriptRegistry: WebViewUserScriptRegistry
         var handlerExtensionIDs: Set<ExtensionIdentifier> = []
 
         init(controller: WKUserContentController, context: BrowserExtensionTabContext) {
             self.controller = controller
             self.context = context
+            self.scriptRegistry = WebViewUserScriptRegistry(controller: controller)
         }
     }
 
@@ -38,10 +40,15 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
     private var controllers: [ObjectIdentifier: ControllerRecord] = [:]
     private var webViews: [UUID: WeakWebView] = [:]
     private var navigationRevocations: [UUID: Task<Void, Never>] = [:]
+    private let idleScheduler = DocumentIdleScheduler()
     private var registeredPermissionIDs: Set<ExtensionIdentifier> = []
     private var repositoryObserver: NSObjectProtocol?
     private var lastRuntimeError: String?
     private var injectedScriptCount = 0
+    private var activeScriptExecutions: [ExtensionIdentifier: Int] = [:]
+    private var permissionFingerprints: [ExtensionIdentifier: String] = [:]
+    private var reloadTail: Task<Void, Never>?
+    private var requestedReloadGeneration: UInt64 = 0
 
     public init(repository: ExtensionRepository = ExtensionRepository()) {
         self.repository = repository
@@ -63,6 +70,7 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
         )
         super.init()
         apiRegistry.scriptExecutor = self
+        apiRegistry.suspendRuntime()
         repositoryObserver = NotificationCenter.default.addObserver(
             forName: ExtensionRepository.didChangeNotification,
             object: nil,
@@ -82,8 +90,34 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
     }
 
     public func reload() async {
+        requestedReloadGeneration &+= 1
+        let generation = requestedReloadGeneration
+        apiRegistry.suspendRuntime()
+        let previous = reloadTail
+        let operation = Task { @MainActor [weak self] in
+            await previous?.value
+            guard let self else { return }
+            let succeeded = await self.performReload()
+            if succeeded, generation == self.requestedReloadGeneration {
+                self.apiRegistry.resumeRuntime()
+            }
+        }
+        reloadTail = operation
+        await operation.value
+    }
+
+    private func performReload() async -> Bool {
         do {
             let installed = try await repository.installedExtensions()
+            let nextPermissionFingerprints = Dictionary(uniqueKeysWithValues: installed.map { item in
+                let fingerprint = ([item.metadata.isEnabled ? "enabled" : "disabled"]
+                    + item.metadata.grantedPermissions.sorted()
+                    + item.metadata.grantedHostPermissions.sorted()).joined(separator: "\u{1F}")
+                return (item.id, fingerprint)
+            })
+            let permissionsChanged = !permissionFingerprints.isEmpty &&
+                nextPermissionFingerprints != permissionFingerprints
+            permissionFingerprints = nextPermissionFingerprints
             apiRegistry.replaceActionDefaults(with: installed)
             let installedIDs = Set(installed.map(\.id))
             for removedID in registeredPermissionIDs.subtracting(installedIDs) {
@@ -93,19 +127,36 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
             await matchCache.removeAll()
             var next: [ExtensionIdentifier: PreparedRuntimeExtension] = [:]
             var preparationErrors: [String] = []
+            var sourceBudget = ExtensionPreparedSourceBudget()
             for item in installed {
                 do {
                     try await permissions.register(
                         extensionID: item.id,
                         manifest: item.manifest,
-                        isEnabled: item.metadata.isEnabled
+                        isEnabled: item.metadata.isEnabled,
+                        grantedCapabilities: Set(
+                            item.metadata.grantedPermissions.compactMap(ExtensionCapability.init(rawValue:))
+                        ),
+                        grantedHostPermissions: item.metadata.grantedHostPermissions
                     )
                     try await matchCache.replaceRules(for: item.id, manifest: item.manifest)
                     guard item.metadata.isEnabled else { continue }
                     let scripts = try await ContentScriptSourceBuilder.prepare(
                         installedExtension: item,
-                        repository: repository
+                        repository: repository,
+                        allowedHostPatterns: Set(item.metadata.grantedHostPermissions)
                     )
+                    var extensionSourceBytes = 0
+                    for script in scripts {
+                        let (nextBytes, overflow) = extensionSourceBytes.addingReportingOverflow(script.source.utf8.count)
+                        guard !overflow else {
+                            throw ExtensionRuntimeError.contentScriptSourceLimitExceeded(
+                                limit: sourceBudget.maximumBytes
+                            )
+                        }
+                        extensionSourceBytes = nextBytes
+                    }
+                    try sourceBudget.consume(byteCount: extensionSourceBytes, scriptCount: scripts.count)
                     let world = WKContentWorld.world(name: "ExtensionBrowser.Extension.\(item.id.rawValue)")
                     next[item.id] = PreparedRuntimeExtension(
                         installed: item,
@@ -114,7 +165,11 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
                         scripts: scripts
                     )
                 } catch {
-                    preparationErrors.append("\(item.metadata.name): \(error.localizedDescription)")
+                    await permissions.unregister(extensionID: item.id)
+                    await matchCache.removeRules(for: item.id)
+                    preparationErrors.append(
+                        "\(item.metadata.name): \(SafeInput.userFacingError(error))"
+                    )
                 }
             }
             prepared = next
@@ -122,16 +177,36 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
             refreshTrackedControllers()
             for (tabID, weakWebView) in webViews {
                 guard let webView = weakWebView.value else { continue }
+                if permissionsChanged {
+                    webView.reload()
+                    continue
+                }
                 injectDynamically(
-                    runAt: [.documentStart, .documentEnd, .documentIdle],
+                    runAt: [.documentStart, .documentEnd],
                     url: webView.url,
                     webView: webView,
                     tabID: tabID,
                     after: navigationRevocations[tabID]
                 )
             }
+            return true
         } catch {
-            lastRuntimeError = error.localizedDescription
+            lastRuntimeError = SafeInput.userFacingError(error)
+            prepared.removeAll(keepingCapacity: false)
+            permissionFingerprints.removeAll(keepingCapacity: false)
+            apiRegistry.replaceActionDefaults(with: [])
+            idleScheduler.cancelAll()
+            await matchCache.removeAll()
+            for extensionID in registeredPermissionIDs {
+                await permissions.unregister(extensionID: extensionID)
+            }
+            registeredPermissionIDs.removeAll(keepingCapacity: false)
+            refreshTrackedControllers()
+            compactWeakReferences()
+            for weakWebView in webViews.values {
+                weakWebView.value?.reload()
+            }
+            return false
         }
     }
 
@@ -145,6 +220,7 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
 
     func navigationDidCommit(url: URL?, in webView: WKWebView, context: BrowserExtensionTabContext) {
         guard !context.isPrivate else { return }
+        idleScheduler.cancel(tabID: context.tabID)
         webViews[context.tabID] = WeakWebView(webView)
         let revocation = Task { [permissions] in
             await permissions.revokeActiveTabGrant(tabID: context.tabID)
@@ -163,17 +239,31 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
         guard !context.isPrivate else { return }
         webViews[context.tabID] = WeakWebView(webView)
         injectDynamically(
-            runAt: [.documentEnd, .documentIdle],
+            runAt: [.documentEnd],
             url: url,
             webView: webView,
             tabID: context.tabID,
             after: navigationRevocations[context.tabID]
         )
+        let expectedURL = url
+        idleScheduler.schedule(tabID: context.tabID) { @MainActor [weak self, weak webView] in
+            guard let self, let webView,
+                  self.webViews[context.tabID]?.value === webView,
+                  webView.url == expectedURL else { return }
+            self.injectDynamically(
+                runAt: [.documentIdle],
+                url: expectedURL,
+                webView: webView,
+                tabID: context.tabID,
+                after: self.navigationRevocations[context.tabID]
+            )
+        }
     }
 
     func navigationDidFail(url: URL?, error: Error, context: BrowserExtensionTabContext) {
-        lastRuntimeError = error.localizedDescription
         guard !context.isPrivate else { return }
+        lastRuntimeError = SafeInput.userFacingError(error)
+        idleScheduler.cancel(tabID: context.tabID)
         let revocation = Task { [permissions] in
             await permissions.revokeActiveTabGrant(tabID: context.tabID)
         }
@@ -189,7 +279,7 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
                 enabledExtensionIDs: Set(prepared.keys)
             )
         } catch {
-            lastRuntimeError = error.localizedDescription
+            lastRuntimeError = SafeInput.userFacingError(error)
             return []
         }
     }
@@ -212,6 +302,7 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
 
     func extensionTabDidClose(id: UUID) {
         navigationRevocations.removeValue(forKey: id)?.cancel()
+        idleScheduler.cancel(tabID: id)
         webViews.removeValue(forKey: id)
         apiRegistry.removeActionState(forTabID: id)
         Task { [permissions] in
@@ -236,6 +327,15 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
         guard let runtimeExtension = prepared[extensionID] else {
             throw ExtensionRuntimeError.extensionDisabled(extensionID.rawValue)
         }
+        let activeCount = activeScriptExecutions[extensionID, default: 0]
+        guard activeCount < 2 else {
+            throw ExtensionRuntimeError.resourceLimitExceeded("too many parallel script executions")
+        }
+        try Task.checkCancellation()
+        activeScriptExecutions[extensionID] = activeCount + 1
+        defer {
+            activeScriptExecutions[extensionID] = max(0, activeScriptExecutions[extensionID, default: 1] - 1)
+        }
         let targetID = tabID ?? BrowserExtensionBridge.shared.browserHost?.extensionActiveTab?.id
         guard let targetID else { throw ExtensionRuntimeError.unavailable("target tab is not live") }
         if let revocation = navigationRevocations[targetID] {
@@ -245,6 +345,7 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
         // Resource expansion can suspend. Do it before authorizing the live document so a
         // navigation cannot turn an earlier host grant into execution in a later document.
         let expanded = try await expandResourceMarkers(in: source, extensionID: extensionID)
+        try Task.checkCancellation()
         if let revocation = navigationRevocations[targetID] {
             await revocation.value
         }
@@ -257,6 +358,7 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
             tabID: targetID,
             extensionID: extensionID
         )
+        try Task.checkCancellation()
         guard webViews[targetID]?.value === webView, webView.url == authorizedURL else {
             throw ExtensionRuntimeError.unavailable("target tab navigated during script authorization")
         }
@@ -270,14 +372,21 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
                 in: nil,
                 contentWorld: runtimeExtension.contentWorld
             )
-            return result.flatMap(JSONValue.init(foundationValue:)) ?? .null
+            guard let result else { return .null }
+            return try ExtensionPayloadValidator.convertIncoming(
+                result,
+                maximumBytes: ExtensionResourceLimits.standard.maximumScriptResultBytes
+            )
         } catch {
-            throw ExtensionRuntimeError.javascriptEvaluationFailed(error.localizedDescription)
+            throw ExtensionRuntimeError.javascriptEvaluationFailed(
+                SafeInput.userFacingError(error, fallback: "JavaScript evaluation failed")
+            )
         }
     }
 
     private func installPreparedExtensions(into record: ControllerRecord) {
         guard let controller = record.controller else { return }
+        var scriptGroups: [String: [WKUserScript]] = [:]
         for runtimeExtension in prepared.values.sorted(by: { $0.installed.id.rawValue < $1.installed.id.rawValue }) {
             let handler = ExtensionScriptMessageHandler(
                 extensionID: runtimeExtension.installed.id,
@@ -290,7 +399,7 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
                 name: runtimeExtension.handlerName
             )
             record.handlerExtensionIDs.insert(runtimeExtension.installed.id)
-            controller.addUserScript(WKUserScript(
+            var scripts = [WKUserScript(
                 source: ChromeBridgeJavaScript.source(
                     messageHandlerName: runtimeExtension.handlerName,
                     extensionID: runtimeExtension.installed.id
@@ -298,9 +407,13 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: false,
                 in: runtimeExtension.contentWorld
-            ))
-            runtimeExtension.scripts.forEach { controller.addUserScript($0.userScript) }
+            )]
+            scripts.append(contentsOf: runtimeExtension.scripts
+                .filter { $0.rule.runAt != .documentIdle }
+                .map(\.userScript))
+            scriptGroups[runtimeExtension.installed.id.rawValue] = scripts
         }
+        record.scriptRegistry.replaceExtensionScripts(scriptGroups)
     }
 
     private func refreshTrackedControllers() {
@@ -315,7 +428,6 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
                 )
             }
             record.handlerExtensionIDs.removeAll()
-            controller.removeAllUserScripts()
             installPreparedExtensions(into: record)
         }
     }
@@ -348,7 +460,7 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
                         )
                         self.injectedScriptCount += 1
                     } catch {
-                        self.lastRuntimeError = error.localizedDescription
+                        self.lastRuntimeError = SafeInput.userFacingError(error)
                     }
                 }
             }
@@ -360,16 +472,32 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
         let suffix = "*/"
         let lines = source.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
         guard !lines.isEmpty, lines.allSatisfy({ $0.hasPrefix(prefix) && $0.hasSuffix(suffix) }) else { return source }
-        var resources: [String] = []
-        for line in lines {
+        let limits = ExtensionResourceLimits.standard
+        guard lines.count <= limits.maximumScriptFileCount else {
+            throw ExtensionRuntimeError.resourceLimitExceeded("too many script files")
+        }
+        var aggregateBytes = 0
+        var result = ""
+        for (index, line) in lines.enumerated() {
             let path = String(line.dropFirst(prefix.count).dropLast(suffix.count))
-            let data = try await repository.resourceData(extensionID: extensionID, path: path)
+            let normalizedPath = try ExtensionResourcePath.normalize(path)
+            let data = try await repository.resourceData(
+                extensionID: extensionID,
+                path: normalizedPath,
+                maximumBytes: limits.maximumScriptFileBytes
+            )
+            let (nextSize, overflow) = aggregateBytes.addingReportingOverflow(data.count)
+            guard !overflow, nextSize <= limits.maximumAggregateScriptBytes else {
+                throw ExtensionRuntimeError.resourceLimitExceeded("aggregate script source is too large")
+            }
+            aggregateBytes = nextSize
             guard let script = String(data: data, encoding: .utf8) else {
                 throw ExtensionRuntimeError.invalidResourceEncoding(path)
             }
-            resources.append(script)
+            if index > 0 { result.append("\n;\n") }
+            result.append(script)
         }
-        return resources.joined(separator: "\n;\n")
+        return result
     }
 
     private func compactWeakReferences() {

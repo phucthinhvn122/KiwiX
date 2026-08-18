@@ -18,12 +18,13 @@ public final class ExtensionScriptMessageHandler: NSObject, WKScriptMessageHandl
         didReceive message: WKScriptMessage,
         replyHandler: @escaping (Any?, String?) -> Void
     ) {
-        guard let request = JSONValue(foundationValue: message.body)?.objectValue,
-              let api = request["api"]?.stringValue else {
-            replyHandler(nil, ExtensionRuntimeError.invalidArguments("missing API name").localizedDescription)
+        let request: ExtensionDecodedRequest
+        do {
+            request = try ExtensionMessageCodec.decodeRequest(message.body)
+        } catch {
+            replyHandler(nil, SafeInput.userFacingError(error))
             return
         }
-        let arguments = request["args"] ?? .null
         let context = ExtensionAPIContext(
             extensionID: extensionID,
             tabID: tabID,
@@ -31,10 +32,14 @@ public final class ExtensionScriptMessageHandler: NSObject, WKScriptMessageHandl
         )
         Task { @MainActor [registry] in
             do {
-                let result = try await registry.handle(api: api, arguments: arguments, context: context)
-                replyHandler(result.foundationValue, nil)
+                let result = try await registry.handle(
+                    api: request.api,
+                    arguments: request.arguments,
+                    context: context
+                )
+                replyHandler(try ExtensionMessageCodec.encodeResponse(result), nil)
             } catch {
-                replyHandler(nil, error.localizedDescription)
+                replyHandler(nil, SafeInput.userFacingError(error))
             }
         }
     }

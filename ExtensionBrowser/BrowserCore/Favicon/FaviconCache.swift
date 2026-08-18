@@ -24,6 +24,7 @@ actor FaviconCache {
     private let directory: URL
     private let configuration: FaviconCacheConfiguration
     private let fileManager: FileManager
+    private let maximumDirectoryEntriesToInspect = 4_096
     private var memory: [String: MemoryEntry] = [:]
     private var memoryByteCount = 0
     private var accessCounter: UInt64 = 0
@@ -48,13 +49,11 @@ actor FaviconCache {
         }
 
         let url = fileURL(forKey: key)
-        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
-              values.isRegularFile == true,
-              let byteCount = values.fileSize,
-              byteCount > 0,
-              byteCount <= configuration.maximumEntryByteCount,
-              let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
-              data.count == byteCount else {
+        guard let data = try? BoundedFileReader.read(
+            from: url,
+            maximumByteCount: configuration.maximumEntryByteCount,
+            fileManager: fileManager
+        ), !data.isEmpty else {
             try? fileManager.removeItem(at: url)
             return nil
         }
@@ -79,11 +78,9 @@ actor FaviconCache {
             try ensureDirectoryExists()
             let url = fileURL(forKey: key)
             try data.write(to: url, options: [.atomic])
+            try AppDataProtectionPolicy.apply(to: url, category: .browserState, fileManager: fileManager)
             try? fileManager.setAttributes(
-                [
-                    .modificationDate: Date(),
-                    .protectionKey: FileProtectionType.completeUntilFirstUserAuthentication
-                ],
+                [.modificationDate: Date()],
                 ofItemAtPath: url.path
             )
             trimDiskIfNeeded()
@@ -103,12 +100,14 @@ actor FaviconCache {
     func removeAll() {
         memory.removeAll(keepingCapacity: false)
         memoryByteCount = 0
-        guard let files = try? fileManager.contentsOfDirectory(
-            at: directory,
+        guard let listing = try? BoundedDirectoryReader.directChildren(
+            of: directory,
             includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            maximumEntryCount: maximumDirectoryEntriesToInspect,
+            fileManager: fileManager
         ) else { return }
-        for file in files where file.pathExtension == "favicon" {
+        for file in listing.entries where file.pathExtension == "favicon" {
             try? fileManager.removeItem(at: file)
         }
     }
@@ -154,14 +153,16 @@ actor FaviconCache {
 
     private func trimDiskIfNeeded() {
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
-        guard let urls = try? fileManager.contentsOfDirectory(
-            at: directory,
+        guard let listing = try? BoundedDirectoryReader.directChildren(
+            of: directory,
             includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            maximumEntryCount: maximumDirectoryEntriesToInspect,
+            fileManager: fileManager
         ) else {
             return
         }
-        var entries = urls.compactMap { url -> DiskEntry? in
+        var entries = listing.entries.compactMap { url -> DiskEntry? in
             guard url.pathExtension == "favicon",
                   let values = try? url.resourceValues(forKeys: keys),
                   values.isRegularFile == true else {

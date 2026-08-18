@@ -53,6 +53,7 @@ public enum ExtensionInstallError: LocalizedError, Equatable, Sendable {
     case tooManyEntries(limit: Int)
     case entryTooLarge(path: String, limit: UInt64)
     case expandedArchiveTooLarge(limit: UInt64)
+    case tooManyInstalledExtensions(limit: Int)
     case invalidEntryPath(String)
     case duplicateEntryPath(String)
     case symbolicLinkNotAllowed(String)
@@ -77,6 +78,8 @@ public enum ExtensionInstallError: LocalizedError, Equatable, Sendable {
             return "'\(path)' exceeds the \(limit) byte per-file limit."
         case .expandedArchiveTooLarge(let limit):
             return "The extracted extension exceeds the \(limit) byte limit."
+        case .tooManyInstalledExtensions(let limit):
+            return "No more than \(limit) extensions can be installed. Remove one and try again."
         case .invalidEntryPath(let path):
             return "The extension package contains an unsafe path: \(path)"
         case .duplicateEntryPath(let path):
@@ -114,6 +117,9 @@ public enum ExtensionRuntimeError: LocalizedError, Equatable, Sendable {
     case invalidResourceEncoding(String)
     case contentScriptSourceLimitExceeded(limit: Int)
     case javascriptEvaluationFailed(String)
+    case resourceLimitExceeded(String)
+    case requestTimedOut
+    case integrityCheckFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -137,6 +143,12 @@ public enum ExtensionRuntimeError: LocalizedError, Equatable, Sendable {
             return "Prepared content scripts exceed the \(limit) byte limit."
         case .javascriptEvaluationFailed(let details):
             return "JavaScript evaluation failed: \(details)"
+        case .resourceLimitExceeded(let details):
+            return "Extension resource limit exceeded: \(details)"
+        case .requestTimedOut:
+            return "The extension request timed out."
+        case .integrityCheckFailed(let details):
+            return "The installed extension failed its integrity check: \(details)"
         }
     }
 }

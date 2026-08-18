@@ -63,7 +63,7 @@ final class SettingsViewController: UITableViewController {
                 content.imageProperties.tintColor = KiwiTheme.accentDeep
             } else {
                 content.text = "Private tabs stay private"
-                content.secondaryText = "Private tabs use a temporary data store and are not saved to history."
+                content.secondaryText = "Private tabs use temporary website data and are not saved to history or tab restore. Downloaded files remain until you delete them."
                 content.image = UIImage(systemName: "hand.raised.fill")
                 content.imageProperties.tintColor = KiwiTheme.privateAccent
             }
@@ -185,7 +185,10 @@ final class SettingsViewController: UITableViewController {
 
         let titleLabel = UILabel()
         titleLabel.text = "KiwiX"
-        titleLabel.font = .systemFont(ofSize: 24, weight: .bold)
+        titleLabel.font = UIFontMetrics(forTextStyle: .title2).scaledFont(
+            for: .systemFont(ofSize: 24, weight: .bold)
+        )
+        titleLabel.adjustsFontForContentSizeCategory = true
 
         let detailLabel = UILabel()
         detailLabel.text = "Fast, focused, and yours."

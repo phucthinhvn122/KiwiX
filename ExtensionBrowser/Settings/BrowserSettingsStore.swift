@@ -18,6 +18,8 @@ final class BrowserSettingsStore {
     private let defaults: UserDefaults
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let maximumCustomEngineCount = 32
+    private let maximumEncodedBytes = 64 * 1_024
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -25,10 +27,17 @@ final class BrowserSettingsStore {
 
     var customSearchEngines: [SearchEngine] {
         guard let data = defaults.data(forKey: Key.customSearchEngines),
+              data.count <= maximumEncodedBytes,
+              (try? BoundedJSONPreflight.validate(data, maximumStructuralTokens: 1_024)) != nil,
               let engines = try? decoder.decode([SearchEngine].self, from: data) else {
             return []
         }
-        return engines.filter { !$0.isBuiltIn && SearchEngine.isValid(template: $0.queryURLTemplate) }
+        return engines.prefix(maximumCustomEngineCount).filter {
+            !$0.isBuiltIn &&
+                $0.name.utf8.count <= SearchEngine.maximumNameBytes &&
+                SafeInput.isSafeDisplayText($0.name) &&
+                SearchEngine.isValid(template: $0.queryURLTemplate)
+        }
     }
 
     var availableSearchEngines: [SearchEngine] {
@@ -57,6 +66,7 @@ final class BrowserSettingsStore {
         }
 
         var engines = customSearchEngines
+        guard engines.count < maximumCustomEngineCount else { return nil }
         engines.append(engine)
         persistCustomEngines(engines)
         selectSearchEngine(id: engine.id)
@@ -74,7 +84,9 @@ final class BrowserSettingsStore {
     }
 
     private func persistCustomEngines(_ engines: [SearchEngine]) {
-        guard let data = try? encoder.encode(engines) else { return }
+        guard engines.count <= maximumCustomEngineCount,
+              let data = try? encoder.encode(engines),
+              data.count <= maximumEncodedBytes else { return }
         defaults.set(data, forKey: Key.customSearchEngines)
     }
 }

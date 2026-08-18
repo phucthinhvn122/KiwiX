@@ -18,7 +18,9 @@ final class BrowserErrorView: UIView {
         icon.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 44, weight: .medium)
 
         titleLabel.text = "Page Not Available"
-        titleLabel.font = .systemFont(ofSize: 27, weight: .bold)
+        titleLabel.font = UIFontMetrics(forTextStyle: .title1).scaledFont(
+            for: .systemFont(ofSize: 27, weight: .bold)
+        )
         titleLabel.adjustsFontForContentSizeCategory = true
         titleLabel.textAlignment = .center
 

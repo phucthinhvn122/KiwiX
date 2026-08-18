@@ -68,6 +68,108 @@ actor DownloadStore {
         }
     }
 
+    /// Reconciles persisted state with the app-owned Downloads directory after launch.
+    /// Interrupted destinations are partial and are deleted; safe untracked regular files are
+    /// surfaced as recovered completed downloads instead of remaining invisible orphans.
+    func reconciledItems(
+        excludingLiveIDs liveIDs: Set<UUID> = [],
+        activityRegistry: ActiveDownloadRegistry? = nil
+    ) throws -> [DownloadItem] {
+        var current = try loadItemsRecoveringCorruption()
+        let directory = try downloadsDirectoryURL()
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.protectionKey: AppDataProtectionPolicy.Category.download.protection]
+        )
+        try AppDataProtectionPolicy.apply(to: directory, category: .download, fileManager: fileManager)
+        let now = Date()
+        var changed = false
+
+        for index in current.indices where !liveIDs.contains(current[index].id) {
+            let fileURL = current[index].localFileURL
+            switch current[index].status {
+            case .queued, .downloading:
+                removeSafeFile(fileURL, in: directory)
+                current[index].status = .failed
+                current[index].errorDescription = "Download was interrupted when the app stopped."
+                current[index].localFileURL = nil
+                current[index].updatedAt = now
+                current[index].completedAt = now
+                changed = true
+            case .completed:
+                if let fileURL, !fileManager.fileExists(atPath: fileURL.path) {
+                    current[index].status = .failed
+                    current[index].errorDescription = "The downloaded file is missing."
+                    current[index].localFileURL = nil
+                    current[index].updatedAt = now
+                    changed = true
+                }
+            case .failed, .cancelled:
+                if fileURL != nil {
+                    removeSafeFile(fileURL, in: directory)
+                    current[index].localFileURL = nil
+                    current[index].updatedAt = now
+                    changed = true
+                }
+            }
+        }
+
+        let trackedPaths = Set(current.compactMap { $0.localFileURL?.standardizedFileURL.path })
+        let enumerator = fileManager.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .creationDateKey, .contentModificationDateKey],
+            options: [.skipsSubdirectoryDescendants]
+        )
+        var candidates: [URL] = []
+        candidates.reserveCapacity(maximumItemCount * 2)
+        while candidates.count < maximumItemCount * 2,
+              let candidate = enumerator?.nextObject() as? URL {
+            candidates.append(candidate)
+        }
+        candidates.sort { $0.lastPathComponent < $1.lastPathComponent }
+
+        // Directory enumeration and recovered metadata are both bounded even if disk state is hostile.
+        for fileURL in candidates {
+            guard DownloadFilePath.isDirectChild(fileURL, of: directory),
+                  !trackedPaths.contains(fileURL.standardizedFileURL.path) else { continue }
+            let values = try? fileURL.resourceValues(
+                forKeys: [.isRegularFileKey, .fileSizeKey, .creationDateKey, .contentModificationDateKey]
+            )
+            guard values?.isRegularFile == true else { continue }
+            if fileURL.lastPathComponent.hasPrefix(".") {
+                if let identifier = DownloadFilePath.internalPartialIdentifier(fileURL.lastPathComponent),
+                   liveIDs.contains(identifier) || activityRegistry?.contains(identifier) == true {
+                    continue
+                }
+                removeSafeFile(fileURL, in: directory)
+                changed = true
+                continue
+            }
+            guard current.count < maximumItemCount else { break }
+            try AppDataProtectionPolicy.apply(to: fileURL, category: .download, fileManager: fileManager)
+            let date = values?.contentModificationDate ?? values?.creationDate ?? now
+            current.append(DownloadItem(
+                sourceURL: nil,
+                fileName: fileURL.lastPathComponent,
+                localFileURL: fileURL.standardizedFileURL,
+                bytesReceived: Int64(max(0, values?.fileSize ?? 0)),
+                status: .completed,
+                errorDescription: nil,
+                isPrivate: false,
+                createdAt: date,
+                updatedAt: date,
+                completedAt: date
+            ))
+            changed = true
+        }
+
+        current.sort { $0.createdAt > $1.createdAt }
+        if current.count > maximumItemCount { current.removeLast(current.count - maximumItemCount) }
+        if changed { try saveItems(current) }
+        return current
+    }
+
     func upsert(_ item: DownloadItem, isPrivate: Bool) throws {
         guard !isPrivate, !item.isPrivate else { return }
         let normalized = try normalizedItem(item)
@@ -119,14 +221,22 @@ actor DownloadStore {
         let fileURL = try metadataFileURL(createDirectory: false)
         guard fileManager.fileExists(atPath: fileURL.path) else { return [] }
 
-        let attributes = try fileManager.attributesOfItem(atPath: fileURL.path)
-        if let byteCount = (attributes[.size] as? NSNumber)?.intValue,
-           byteCount > maximumMetadataByteCount {
+        let data: Data
+        do {
+            data = try BoundedFileReader.read(
+                from: fileURL,
+                maximumByteCount: maximumMetadataByteCount,
+                fileManager: fileManager
+            )
+        } catch {
             throw DownloadStoreError.metadataTooLarge
         }
-
-        let data = try Data(contentsOf: fileURL, options: [.mappedIfSafe])
-        guard data.count <= maximumMetadataByteCount else {
+        do {
+            try BoundedJSONPreflight.validate(
+                data,
+                maximumStructuralTokens: maximumItemCount * 32
+            )
+        } catch {
             throw DownloadStoreError.metadataTooLarge
         }
         let document = try decoder.decode(DownloadStoreDocument.self, from: data)
@@ -145,6 +255,41 @@ actor DownloadStore {
         }
     }
 
+    private func loadItemsRecoveringCorruption() throws -> [DownloadItem] {
+        do {
+            return try loadItems()
+        } catch is DecodingError {
+            try quarantineMetadata()
+            return []
+        } catch let error as DownloadStoreError {
+            switch error {
+            case .unsupportedSchema, .metadataTooLarge:
+                try quarantineMetadata()
+                return []
+            case .invalidSourceURL, .invalidLocalFileURL:
+                throw error
+            }
+        }
+    }
+
+    private func quarantineMetadata() throws {
+        let fileURL = try metadataFileURL(createDirectory: false)
+        guard fileManager.fileExists(atPath: fileURL.path) else { return }
+        let quarantineURL = fileURL.deletingLastPathComponent().appendingPathComponent(
+            "Downloads-v1.corrupt-\(UUID().uuidString).json",
+            isDirectory: false
+        )
+        try fileManager.moveItem(at: fileURL, to: quarantineURL)
+        try AppDataProtectionPolicy.apply(to: quarantineURL, category: .browserState, fileManager: fileManager)
+    }
+
+    private func removeSafeFile(_ fileURL: URL?, in directory: URL) {
+        guard let fileURL,
+              DownloadFilePath.isDirectChild(fileURL, of: directory),
+              fileManager.fileExists(atPath: fileURL.path) else { return }
+        try? fileManager.removeItem(at: fileURL)
+    }
+
     private func saveItems(_ items: [DownloadItem]) throws {
         var boundedItems = Array(items.prefix(maximumItemCount))
         var data = try encodedDocument(items: boundedItems)
@@ -158,6 +303,7 @@ actor DownloadStore {
 
         let fileURL = try metadataFileURL(createDirectory: true)
         try data.write(to: fileURL, options: [.atomic])
+        try AppDataProtectionPolicy.apply(to: fileURL, category: .browserState, fileManager: fileManager)
     }
 
     private func encodedDocument(items: [DownloadItem]) throws -> Data {
@@ -176,13 +322,15 @@ actor DownloadStore {
         normalized.totalBytesExpected = item.totalBytesExpected.flatMap { $0 > 0 ? $0 : nil }
 
         if let sourceURL = item.sourceURL {
-            guard sourceURL.absoluteString.utf8.count <= 4_096 else {
-                throw DownloadStoreError.invalidSourceURL
+            if sourceURL.absoluteString.utf8.count <= 4_096,
+               ["http", "https"].contains(sourceURL.scheme?.lowercased() ?? "") {
+                var components = URLComponents(url: sourceURL, resolvingAgainstBaseURL: false)
+                components?.user = nil
+                components?.password = nil
+                normalized.sourceURL = components?.url
+            } else {
+                normalized.sourceURL = nil
             }
-            var components = URLComponents(url: sourceURL, resolvingAgainstBaseURL: false)
-            components?.user = nil
-            components?.password = nil
-            normalized.sourceURL = components?.url ?? sourceURL
         }
 
         normalized.mimeType = boundedText(item.mimeType, maximumUTF8Count: 255)
@@ -200,15 +348,7 @@ actor DownloadStore {
 
     private func boundedText(_ value: String?, maximumUTF8Count: Int) -> String? {
         guard let value else { return nil }
-        let clean = String(value.unicodeScalars.filter {
-            !CharacterSet.controlCharacters.contains($0) || $0 == "\n"
-        })
-        var result = ""
-        for character in clean {
-            let candidate = result + String(character)
-            guard candidate.utf8.count <= maximumUTF8Count else { break }
-            result = candidate
-        }
+        let result = SafeInput.displayText(value, maximumByteCount: maximumUTF8Count)
         return result.isEmpty ? nil : result
     }
 

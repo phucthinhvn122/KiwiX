@@ -4,17 +4,34 @@ public enum ChromeBridgeJavaScript {
     public static func source(messageHandlerName: String, extensionID: ExtensionIdentifier) -> String {
         let handler = javaScriptString(messageHandlerName)
         let identifier = javaScriptString(extensionID.rawValue)
+        let maximumIncomingBytes = ExtensionResourceLimits.standard.maximumIncomingBytes
+        let maximumOutgoingBytes = ExtensionResourceLimits.standard.maximumOutgoingBytes
         return """
         (() => {
           if (globalThis.__extensionBrowserBridgeInstalled) return;
           Object.defineProperty(globalThis, '__extensionBrowserBridgeInstalled', { value: true });
           const handlerName = \(handler);
           const extensionId = \(identifier);
+          const textEncoder = new TextEncoder();
           const listeners = [];
           const call = (api, args = null) => {
             const target = globalThis.webkit?.messageHandlers?.[handlerName];
             if (!target) return Promise.reject(new Error('Extension bridge unavailable'));
-            return target.postMessage({ api, args });
+            let serialized;
+            try {
+              serialized = JSON.stringify({ api, args });
+            } catch (_) {
+              return Promise.reject(new Error('Extension request is not JSON serializable'));
+            }
+            if (typeof serialized !== 'string' || textEncoder.encode(serialized).byteLength > \(maximumIncomingBytes)) {
+              return Promise.reject(new Error('Extension request exceeds the bridge size limit'));
+            }
+            return target.postMessage(serialized).then(serializedResult => {
+              if (typeof serializedResult !== 'string' || textEncoder.encode(serializedResult).byteLength > \(maximumOutgoingBytes)) {
+                throw new Error('Extension response exceeds the bridge size limit');
+              }
+              return JSON.parse(serializedResult);
+            });
           };
           const runtime = {
             id: extensionId,

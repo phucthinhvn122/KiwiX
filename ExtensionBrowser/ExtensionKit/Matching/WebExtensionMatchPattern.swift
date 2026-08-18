@@ -118,6 +118,69 @@ public struct WebExtensionMatchPattern: Hashable, Codable, Sendable, CustomStrin
         return pathAndQuery.range(of: pathExpression, options: [.regularExpression]) != nil
     }
 
+    /// Returns true when every URL accepted by `other` is also accepted by this pattern.
+    /// Path containment is deliberately conservative: arbitrary glob languages are not
+    /// approximated. A path is accepted only when it is identical or this pattern is the
+    /// manifest-wide `/*` path. This keeps persisted, user-selected website grants narrower
+    /// than what the extension declared.
+    public func encompasses(_ other: WebExtensionMatchPattern) -> Bool {
+        guard other.schemes.isSubset(of: schemes), encompassesHost(other.host) else { return false }
+        return pathExpression == other.pathExpression || pathExpression == Self.regularExpression(forGlob: "/*")
+    }
+
+    /// Produces the narrowest declared grant for one concrete HTTP(S) hostname while
+    /// preserving the manifest's scheme and path restriction.
+    public func narrowed(toHostname rawHostname: String) -> WebExtensionMatchPattern? {
+        let hostname = rawHostname.lowercased()
+        guard Self.isValidHost(hostname), hostAllows(hostname), !schemes.isDisjoint(with: [.http, .https]) else {
+            return nil
+        }
+        if source == "<all_urls>" {
+            return try? WebExtensionMatchPattern("*://\(hostname)/*")
+        }
+        guard let separator = source.range(of: "://") else { return nil }
+        let remainder = source[separator.upperBound...]
+        guard let slash = remainder.firstIndex(of: "/") else { return nil }
+        let suffix = remainder[slash...]
+        let scheme = source[..<separator.lowerBound]
+        return try? WebExtensionMatchPattern("\(scheme)://\(hostname)\(suffix)")
+    }
+
+    public var exactHostname: String? {
+        guard case .exact(let hostname) = host else { return nil }
+        return hostname
+    }
+
+    private func encompassesHost(_ other: Host) -> Bool {
+        switch (host, other) {
+        case (.none, .none), (.any, .any):
+            return true
+        case (.any, .exact), (.any, .domainAndSubdomains):
+            return true
+        case (.exact(let expected), .exact(let actual)):
+            return expected == actual
+        case (.domainAndSubdomains(let expected), .exact(let actual)):
+            return actual == expected || actual.hasSuffix("." + expected)
+        case (.domainAndSubdomains(let expected), .domainAndSubdomains(let actual)):
+            return actual == expected || actual.hasSuffix("." + expected)
+        default:
+            return false
+        }
+    }
+
+    private func hostAllows(_ hostname: String) -> Bool {
+        switch host {
+        case .any:
+            return true
+        case .exact(let expected):
+            return hostname == expected
+        case .domainAndSubdomains(let expected):
+            return hostname == expected || hostname.hasSuffix("." + expected)
+        case .none:
+            return false
+        }
+    }
+
     private static func isValidHost(_ value: String) -> Bool {
         guard !value.isEmpty, value.utf8.count <= 253, !value.hasPrefix("."), !value.hasSuffix(".") else { return false }
         if value == "localhost" { return true }

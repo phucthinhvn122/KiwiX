@@ -27,7 +27,11 @@ public actor ExtensionInstaller {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let extracted = container.appendingPathComponent("extracted", isDirectory: true)
         do {
-            try fileManager.createDirectory(at: container, withIntermediateDirectories: true, attributes: nil)
+            try fileManager.createDirectory(
+                at: container,
+                withIntermediateDirectories: true,
+                attributes: [.protectionKey: AppDataProtectionPolicy.Category.temporarySensitive.protection]
+            )
             let values = try packageURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
             if values.isDirectory == true {
                 try extractor.copyDirectory(from: packageURL, to: extracted, fileManager: fileManager)
@@ -41,12 +45,18 @@ public actor ExtensionInstaller {
             let manifest = try parser.parse(fileURL: manifestURL)
             try verifyReferencedResources(manifest: manifest, rootURL: extensionRoot)
             let identity = try ExtensionIdentityGenerator.identity(forDirectory: extensionRoot, fileManager: fileManager)
+            try AppDataProtectionPolicy.protectRecursively(
+                container,
+                category: .temporarySensitive,
+                fileManager: fileManager
+            )
             return ExtensionPackagePreview(
                 id: identity.identifier,
                 manifest: manifest,
                 packageDigest: identity.digest,
                 stagedDirectoryURL: extensionRoot,
-                stagingContainerURL: container
+                stagingContainerURL: container,
+                sourceDescription: "Files: \(packageURL.lastPathComponent)"
             )
         } catch {
             try? fileManager.removeItem(at: container)

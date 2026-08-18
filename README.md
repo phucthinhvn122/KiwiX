@@ -1,8 +1,8 @@
 # KiwiX — ExtensionBrowser v3
 
-> Trạng thái: đang chuyển sang kiến trúc Path A, min iOS 18.4. M0 chỉ dựng build/IPA/CI. Runtime
-> `chrome.*` tự viết trong source hiện tại là legacy code và sẽ được thay bằng `WKWebExtension` ở M2;
-> không được xem phần legacy là kiến trúc mục tiêu hoặc bằng chứng compatibility.
+> Trạng thái: runtime hiện tại là compatibility layer `chrome.*` giới hạn, min iOS 18.4, đã được
+> harden theo contract trong `docs/ARCHITECTURE.md`. `WKWebExtension` vẫn là một quyết định migration
+> tương lai trong `DECISIONS.md`, không phải implementation hay bằng chứng compatibility hiện tại.
 
 Các quyết định đã chốt nằm trong [DECISIONS.md](DECISIONS.md), rủi ro và stop-ship conditions nằm
 trong [RISKS.md](RISKS.md). Bằng chứng build/test M0 và gate còn lại nằm trong
@@ -42,7 +42,7 @@ Trên máy Windows:
 - Không cần cài Xcode, Swift hay XcodeGen trên Windows.
 - Để cài lên iPhone: Apple Developer signing assets phù hợp hoặc một quy trình re-sign/sideload do bạn tự quản lý.
 
-CI dùng runner `macos-15`, Xcode mặc định của image, Swift Package Manager và XcodeGen `2.46.0`. Binary XcodeGen được tải từ release chính thức và kiểm tra SHA-256 trước khi chạy. `ZIPFoundation` được khóa ở `0.9.20` trong `project.yml`.
+CI dùng runner `macos-15`, pin Xcode 16.4 qua `DEVELOPER_DIR`, Swift Package Manager và XcodeGen `2.46.0`. Binary XcodeGen được tải từ release chính thức và kiểm tra SHA-256 trước khi chạy. `ZIPFoundation` được khóa ở `0.9.20` trong `project.yml`; GitHub Actions bên thứ ba được pin bằng commit SHA.
 
 ## Bắt đầu nhanh
 
@@ -68,7 +68,7 @@ Mở pull request để workflow **Build Simulator** compile và chạy unit tes
 ```text
 .
 |-- .github/workflows/
-|   |-- build-simulator.yml
+|   |-- ci.yml
 |   `-- build-device.yml
 |-- docs/ARCHITECTURE.md
 |-- Examples/HelloExtension/
@@ -107,7 +107,7 @@ Browser MVP hiện có start page KiwiX, bottom toolbar hai hàng Back/Forward, 
 
 ### Simulator: build và test trên mọi push/PR
 
-[`.github/workflows/build-simulator.yml`](.github/workflows/build-simulator.yml) thực hiện:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) thực hiện:
 
 1. Kiểm tra toolchain Apple trên `macos-15`.
 2. Tải XcodeGen `2.46.0`, xác minh checksum, rồi generate `ExtensionBrowser.xcodeproj`.
@@ -200,8 +200,8 @@ Không import extension không tin cậy trên thiết bị chứa dữ liệu q
 MVP chỉ nhận Manifest V3 và parse các trường:
 
 - `name`, `version`, `description`, `permissions`, `host_permissions`.
-- `content_scripts`: `matches`, `exclude_matches`, `js`, `css`, `run_at`; model cũng nhận `all_frames` nhưng runtime MVP chỉ nhắm main frame.
-- `action` metadata (`default_title`, `default_popup`, `default_icon`) và `icons`; đã có popup provider dùng `WKWebView` non-persistent + bridge và chặn remote subresources, nhưng chưa có action button trên toolbar để mở popup.
+- `content_scripts`: `matches`, `exclude_matches`, `js`, `css`, `run_at`, `all_frames`; persistent scripts use the declared frame scope, while programmatic `executeScript` targets the main document.
+- `action` metadata (`default_title`, `default_popup`, `default_icon`) và `icons`; browser menu hiển thị extension actions, popup dùng `WKWebView` non-persistent + bridge và deny toàn bộ remote network.
 - Match pattern gồm `<all_urls>`, HTTP/HTTPS wildcard scheme/host/path và các pattern hợp lệ mà validator chấp nhận.
 
 Compatibility bridge được giới hạn có chủ ý. Xem source/runtime và test để biết contract chính xác; API không nằm trong danh sách dưới đây phải trả lỗi unsupported thay vì âm thầm giả lập:
@@ -221,6 +221,12 @@ Compatibility bridge được giới hạn có chủ ý. Xem source/runtime và 
 - Manifest/permission/match pattern được validate trước install; index match được compile/cache, không parse lại manifest mỗi navigation.
 - ID package deterministic từ digest; dữ liệu và storage đặt trong namespace riêng từng extension.
 - Permission và host access được kiểm tra tại runtime trước API/injection nhạy cảm.
+- Declared permission không đồng nghĩa granted permission: broad hosts, `<all_urls>`, `tabs` và `scripting` bắt đầu denied; details UI hỗ trợ Ask/current/selected/all-requested sites và revoke ngay.
+- Favicon native fetch resolve DNS, chặn địa chỉ local/private/reserved, validate mọi redirect và stream với byte/image limits.
+- IPC chỉ nhận JSON string phẳng và preflight byte/depth/token trước decode; tabs, script source/result/parallelism (kể cả budget tổng runtime 16 MiB), storage, persisted state và downloads đều có quota/rate/size limits.
+- File và directory chịu ảnh hưởng từ dữ liệu ngoài được đọc/duyệt streaming với hard cap; repository fail closed khi scan bị truncate và mặc định giới hạn 128 extension đã cài.
+- Permission reload khóa bridge ngay, serialize theo generation và cancel operation đang chạy; `document_idle` dùng scheduler theo tab có replace/cancel khi navigation đổi.
+- Storage JSON hỏng/quá lớn được quarantine rồi phục hồi namespace rỗng; lỗi I/O thật vẫn trả lỗi thay vì bị che.
 - Content scripts dùng `WKContentWorld` riêng theo extension khi API cho phép. Đây không phải sandbox hoàn hảo: script được phép vẫn tương tác DOM trang.
 - Private browsing mặc định không chạy extension trong MVP.
 
@@ -228,7 +234,7 @@ Chi tiết threat model và giới hạn nằm trong [docs/ARCHITECTURE.md](docs
 
 ## Testing
 
-Unit tests hiện bao phủ manifest parser/validator + safety caps, match patterns, permission/host separation, URL/search parsing, ZIP/resource-path/lazy-entry validation, content-source cache/quota, storage isolation, deterministic identity, history và tab lifecycle/session model. Workflow Simulator là nguồn xác nhận compile/test chính thức.
+Unit tests hiện bao phủ manifest/parser limits, favicon destination/image policy, permission + selected-site/revoke/reload races, bridge pre-decode/tab/script/storage quotas, repository integrity/corruption/count bounds, idle scheduling, navigation/dialog policy, download byte/disk/reconciliation, bounded persistence/directory scans, data protection và private-mode boundaries. Workflow Simulator là nguồn xác nhận compile/test chính thức.
 
 Do máy Windows không có Xcode/WebKit SDK iOS, không dùng kết quả parse Swift hay artifact giả để thay thế `xcodebuild test`. Nếu workflow đầu tiên phát hiện sai khác SDK/Xcode, sửa source/config rồi push lại và giữ log/`.xcresult` làm bằng chứng.
 
@@ -236,18 +242,18 @@ Do máy Windows không có Xcode/WebKit SDK iOS, không dùng kết quả parse 
 
 - iOS yêu cầu browser dùng WebKit; dự án không nhúng Chromium và không thể đạt parity Chrome/Kiwi đầy đủ.
 - Không có background service worker, declarativeNetRequest, webRequest, native messaging, binary module, Chrome Web Store auto-install hoặc sync.
-- Không hỗ trợ Manifest V2; popup renderer/provider đã có nhưng action toolbar và lifecycle popup hoàn chỉnh chưa được nối vào browser chrome.
-- Main-frame content scripts là trọng tâm MVP; iframe/all-frames, extension update/migration và permission prompt theo domain cần hoàn thiện.
+- Không hỗ trợ Manifest V2; extension update/rollback, service worker và long-lived ports chưa có.
+- Permission UI có grant/revoke theo domain; runtime prompt ngoài one-time `activeTab` gesture chưa mô phỏng toàn bộ browser Chrome/Safari.
 - Tab suspension khôi phục URL/snapshot, không serialize toàn bộ JavaScript heap, form state hay back-forward list của trang.
-- History đã có store/UI và chỉ ghi navigation HTTP(S) của tab thường. Downloads đã được nối với `WKDownload`, có tiến độ và lưu metadata an toàn; private download chỉ tồn tại trong phiên hiện tại. Favicon mới chỉ lưu candidate `/favicon.ico`, chưa download/render icon.
+- History chỉ ghi navigation HTTP(S) của tab thường. Downloads ghi vào hidden partial rồi mới atomic-rename khi hoàn tất, enforce byte/disk/concurrency policy và reconcile partial/orphan files; private metadata không persist nhưng file user chọn tải vẫn tồn tại với warning. Favicon được discover, fetch bằng public-destination policy, validate/decode và cache có quota (private mode không ghi disk cache).
 - Simulator build không chạy trực tiếp trên Windows; signed device build không thể tồn tại nếu thiếu Apple signing assets hợp lệ.
 - Chưa có bằng chứng build từ macOS cho đến khi workflow GitHub Actions đầu tiên chạy thành công.
 
 ## Roadmap đề xuất
 
-1. Chạy CI đầu tiên, khóa Xcode image/version sau khi có baseline xanh và sửa mọi cảnh báo Swift concurrency.
-2. Hoàn thiện popup/action toolbar, runtime message ports và test end-to-end content-world isolation.
-3. Nâng permission UX: grant theo host, activeTab theo gesture, revoke/audit và private-mode opt-in riêng.
+1. Chạy CI/macOS cho commit hardening, sửa mọi lỗi SDK hoặc Swift concurrency và lưu `.xcresult`.
+2. Chạy test thiết bị cho DNS/redirect, popup network capture, downloads, file protection, VoiceOver và memory pressure.
+3. Bổ sung runtime permission prompt ngoài activeTab, audit log quyền và E2E revoke/content-world isolation.
 4. Cải thiện restore tab/back-forward state, snapshot cache eviction và đo memory/tab-switch latency trên thiết bị thật.
 5. Thêm extension update/migration, signature/trust policy cho package và fuzz tests ZIP/manifest/matcher.
 6. Tạo release workflow riêng cho TestFlight/App Store khi có App Store Connect credentials và policy sản phẩm rõ ràng.

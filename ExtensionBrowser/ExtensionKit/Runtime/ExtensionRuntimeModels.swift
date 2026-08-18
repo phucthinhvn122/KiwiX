@@ -70,7 +70,12 @@ final class BrowserHostExtensionTabProvider: ExtensionTabProviding {
         guard let host = BrowserExtensionBridge.shared.browserHost else {
             throw ExtensionRuntimeError.unavailable("no browser window is active")
         }
-        let id = host.openTabFromExtension(url: url, activate: active)
+        let id: UUID
+        do {
+            id = try host.openTabFromExtension(url: url, activate: active)
+        } catch {
+            throw ExtensionRuntimeError.resourceLimitExceeded("tab limit reached")
+        }
         return ExtensionTabSnapshot(id: id, title: "New Tab", url: url, isActive: active)
     }
 }

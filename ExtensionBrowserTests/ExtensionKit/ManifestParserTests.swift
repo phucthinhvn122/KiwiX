@@ -65,6 +65,25 @@ final class ManifestParserTests: XCTestCase {
         XCTAssertThrowsError(try ManifestValidator.validate(manifest))
     }
 
+    func testRejectsBidiFormattingInNativeExtensionMetadata() {
+        let manifest = WebExtensionManifest(
+            manifestVersion: 3,
+            name: "Trusted\u{202E}txt.exe",
+            version: "1"
+        )
+        XCTAssertThrowsError(try ManifestValidator.validate(manifest))
+    }
+
+    func testRejectsExcessiveJSONNestingBeforeDecode() {
+        let nested = String(repeating: "[", count: 40) + "0" + String(repeating: "]", count: 40)
+        XCTAssertThrowsError(try ManifestParser().parse(data: Data(nested.utf8))) { error in
+            guard let manifestError = error as? ExtensionManifestError,
+                  case .manifestLimitExceeded = manifestError else {
+                return XCTFail("Expected the manifest depth limit, got \(error)")
+            }
+        }
+    }
+
     func testRejectsOversizedManifestAndHostPermissionCollections() {
         let oversized = Data(repeating: 0x20, count: ManifestParser.maximumManifestBytes + 1)
         XCTAssertThrowsError(try ManifestParser().parse(data: oversized)) { error in

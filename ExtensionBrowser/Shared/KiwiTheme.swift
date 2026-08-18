@@ -52,7 +52,7 @@ enum KiwiTheme {
         navigationAppearance.titleTextAttributes = [.foregroundColor: UIColor.label]
         navigationAppearance.largeTitleTextAttributes = [
             .foregroundColor: UIColor.label,
-            .font: UIFont.systemFont(ofSize: 34, weight: .bold)
+            .font: UIFont.preferredFont(forTextStyle: .largeTitle)
         ]
 
         UINavigationBar.appearance().standardAppearance = navigationAppearance

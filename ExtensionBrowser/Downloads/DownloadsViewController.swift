@@ -58,10 +58,13 @@ final class DownloadsViewController: UITableViewController, UIDocumentInteractio
         _ tableView: UITableView,
         cellForRowAt indexPath: IndexPath
     ) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(
+        guard let cell = tableView.dequeueReusableCell(
             withIdentifier: DownloadTableViewCell.reuseIdentifier,
             for: indexPath
-        ) as! DownloadTableViewCell
+        ) as? DownloadTableViewCell else {
+            assertionFailure("Download cell registration is inconsistent")
+            return UITableViewCell()
+        }
         let item = items[indexPath.row]
         let canOpen = coordinator.openableFileURL(for: item.id) != nil
         cell.configure(with: item, canOpen: canOpen)
@@ -93,14 +96,17 @@ final class DownloadsViewController: UITableViewController, UIDocumentInteractio
         }
 
         let delete = UIContextualAction(style: .destructive, title: "Delete") { [weak self] _, _, completion in
-            self?.coordinator.delete(id: item.id)
-            completion(true)
+            guard let self else {
+                completion(false)
+                return
+            }
+            self.confirmDelete(item: item, completion: completion)
         }
         delete.image = UIImage(systemName: "trash")
         actions.append(delete)
 
         let configuration = UISwipeActionsConfiguration(actions: actions)
-        configuration.performsFirstActionWithFullSwipe = item.status.isFinished
+        configuration.performsFirstActionWithFullSwipe = false
         return configuration
     }
 
@@ -125,6 +131,24 @@ final class DownloadsViewController: UITableViewController, UIDocumentInteractio
         if let popover = alert.popoverPresentationController {
             popover.barButtonItem = navigationItem.rightBarButtonItem
         }
+        present(alert, animated: true)
+    }
+
+    private func confirmDelete(item: DownloadItem, completion: @escaping (Bool) -> Void) {
+        guard presentedViewController == nil else {
+            completion(false)
+            return
+        }
+        let alert = UIAlertController(
+            title: "Delete Download?",
+            message: "This permanently removes \(item.fileName) and its downloaded file from this device.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completion(false) })
+        alert.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
+            self?.coordinator.delete(id: item.id)
+            completion(self != nil)
+        })
         present(alert, animated: true)
     }
 
@@ -203,7 +227,10 @@ private final class DownloadTableViewCell: UITableViewCell {
         progressView.progress = Float(item.progress ?? 0)
         accessoryType = canOpen ? .disclosureIndicator : .none
         selectionStyle = canOpen ? .default : .none
+        isAccessibilityElement = true
+        accessibilityLabel = item.fileName
         accessibilityValue = accessibilityDescription(for: item)
+        accessibilityHint = canOpen ? "Double tap to preview or share this file." : nil
     }
 
     private func secondaryText(for item: DownloadItem) -> String {
@@ -255,11 +282,12 @@ private final class DownloadTableViewCell: UITableViewCell {
     }
 
     private func accessibilityDescription(for item: DownloadItem) -> String {
+        let privacy = item.isPrivate ? "Private download, " : ""
         switch item.status {
         case .downloading:
-            return "Downloading, \(Int((item.progress ?? 0) * 100)) percent"
+            return "\(privacy)downloading, \(Int((item.progress ?? 0) * 100)) percent"
         default:
-            return item.status.rawValue.capitalized
+            return privacy + item.status.rawValue.capitalized
         }
     }
 }

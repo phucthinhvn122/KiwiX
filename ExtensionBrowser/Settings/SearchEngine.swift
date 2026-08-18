@@ -1,6 +1,9 @@
 import Foundation
 
 struct SearchEngine: Codable, Hashable, Identifiable, Sendable {
+    static let maximumNameBytes = 128
+    static let maximumTemplateBytes = 2_048
+    static let maximumQueryBytes = 2_048
     let id: String
     var name: String
     var queryURLTemplate: String
@@ -15,6 +18,9 @@ struct SearchEngine: Codable, Hashable, Identifiable, Sendable {
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty,
               !cleanName.isEmpty,
+              cleanName.utf8.count <= Self.maximumNameBytes,
+              SafeInput.isSafeDisplayText(cleanName),
+              queryURLTemplate.utf8.count <= Self.maximumTemplateBytes,
               Self.isValid(template: queryURLTemplate) else {
             return nil
         }
@@ -26,6 +32,7 @@ struct SearchEngine: Codable, Hashable, Identifiable, Sendable {
     }
 
     func searchURL(for query: String) -> URL? {
+        guard query.utf8.count <= Self.maximumQueryBytes else { return nil }
         var allowed = CharacterSet.urlQueryAllowed
         allowed.remove(charactersIn: "&+=?#")
         guard let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: allowed) else {
@@ -36,11 +43,14 @@ struct SearchEngine: Codable, Hashable, Identifiable, Sendable {
 
     static func isValid(template: String) -> Bool {
         guard template.contains("{query}") else { return false }
+        guard template.utf8.count <= maximumTemplateBytes else { return false }
         let candidate = template.replacingOccurrences(of: "{query}", with: "extensionbrowser")
         guard let components = URLComponents(string: candidate),
               let scheme = components.scheme?.lowercased(),
               ["http", "https"].contains(scheme),
-              components.host != nil else {
+              components.host != nil,
+              components.user == nil,
+              components.password == nil else {
             return false
         }
         return true

@@ -45,4 +45,9 @@ final class URLInputParserTests: XCTestCase {
     func testAboutBlankIsSupported() {
         XCTAssertEqual(parser.resolve("about:blank"), .url(URL(string: "about:blank")!))
     }
+
+    func testCredentialsAndOversizedInputAreRejectedAsURLs() {
+        XCTAssertNil(parser.resolve("https://user:password@example.com"))
+        XCTAssertNil(parser.resolve(String(repeating: "a", count: SafePersistence.maximumURLBytes + 1)))
+    }
 }

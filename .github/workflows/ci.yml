@@ -21,33 +21,17 @@ jobs:
       PROJECT: ExtensionBrowser.xcodeproj
       SCHEME: ExtensionBrowser
       BUNDLE_IDENTIFIER: com.phucthinhvn122.KiwiX
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - name: Select latest installed stable Xcode
+      - name: Verify pinned Xcode
         run: |
           set -euo pipefail
-          /usr/bin/python3 <<'PY'
-          import os
-          import pathlib
-          import re
-
-          candidates = []
-          for path in pathlib.Path("/Applications").glob("Xcode_*.app"):
-              match = re.fullmatch(r"Xcode_(\d+(?:\.\d+)*)\.app", path.name)
-              if match:
-                  version = tuple(int(part) for part in match.group(1).split("."))
-                  candidates.append((version, path))
-          if not candidates:
-              raise SystemExit("No stable versioned Xcode installation was found")
-          _, selected = max(candidates)
-          developer_dir = selected / "Contents" / "Developer"
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
-              output.write(f"DEVELOPER_DIR={developer_dir}\n")
-          print(f"Selected Xcode: {selected}")
-          PY
+          test -x "${DEVELOPER_DIR}/usr/bin/xcodebuild"
+          xcodebuild -version | grep -F "Xcode 16.4"
 
       - name: Report Apple toolchain
         run: |
@@ -116,12 +100,13 @@ jobs:
           unzip -t artifacts/simulator/ExtensionBrowser-Simulator.zip
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: KiwiX-${{ github.sha }}
           path: |
             artifacts/simulator/ExtensionBrowser-Simulator.zip
             artifacts/ipa/ExtensionBrowser-Unsigned.ipa
+            build/Tests.xcresult
             build/Benchmarks.xcresult
           if-no-files-found: error
           compression-level: 0
@@ -129,7 +114,7 @@ jobs:
 
       - name: Upload diagnostics on failure
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: KiwiX-Diagnostics-${{ github.sha }}
           path: |

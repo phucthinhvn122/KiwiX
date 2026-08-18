@@ -1,10 +1,12 @@
 import Foundation
 
 public enum ExtensionResourcePath {
+    public static let maximumPathByteCount = 1_024
+
     /// Validates an archive or manifest path and returns a stable forward-slash form.
     public static func normalize(_ path: String, allowsTrailingSlash: Bool = false) throws -> String {
         guard !path.isEmpty,
-              path.utf8.count <= 1_024,
+              path.utf8.count <= maximumPathByteCount,
               !path.contains("\0"),
               !path.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }),
               !path.contains("\\"),

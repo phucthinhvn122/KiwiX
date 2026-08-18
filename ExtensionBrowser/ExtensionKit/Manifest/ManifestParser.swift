@@ -11,6 +11,13 @@ public struct ManifestParser: Sendable {
                 "maximum size is \(Self.maximumManifestBytes) bytes"
             )
         }
+        try BoundedJSONPreflight.validate(
+            data,
+            maximumDepth: 32,
+            maximumStringBytes: 64 * 1_024,
+            maximumStructuralTokens: 50_000
+        )
+        try Self.validateJSONStructure(data)
         let manifest: WebExtensionManifest
         do {
             manifest = try JSONDecoder().decode(WebExtensionManifest.self, from: data)
@@ -22,10 +29,50 @@ public struct ManifestParser: Sendable {
     }
 
     public func parse(fileURL: URL) throws -> WebExtensionManifest {
-        guard fileURL.isFileURL, let data = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]) else {
+        guard let data = try? BoundedFileReader.read(
+            from: fileURL,
+            maximumByteCount: Self.maximumManifestBytes
+        ) else {
             throw ExtensionManifestError.unreadableManifest
         }
         return try parse(data: data)
+    }
+
+    private static func validateJSONStructure(_ data: Data) throws {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        var stringBytes = 0
+        for byte in data {
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if byte == 0x5C {
+                    escaped = true
+                } else if byte == 0x22 {
+                    inString = false
+                } else {
+                    stringBytes += 1
+                    guard stringBytes <= 64 * 1_024 else {
+                        throw ExtensionManifestError.manifestLimitExceeded("a JSON string exceeds 65536 bytes")
+                    }
+                }
+            } else if byte == 0x22 {
+                inString = true
+                stringBytes = 0
+            } else if byte == 0x7B || byte == 0x5B {
+                depth += 1
+                guard depth <= 32 else {
+                    throw ExtensionManifestError.manifestLimitExceeded("JSON nesting exceeds 32 levels")
+                }
+            } else if byte == 0x7D || byte == 0x5D {
+                depth -= 1
+                guard depth >= 0 else { throw ExtensionManifestError.invalidJSON("unbalanced JSON") }
+            }
+        }
+        guard depth == 0, !inString, !escaped else {
+            throw ExtensionManifestError.invalidJSON("unterminated or unbalanced JSON")
+        }
     }
 }
 
@@ -52,18 +99,23 @@ public enum ManifestValidator {
         guard !manifest.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ExtensionManifestError.missingName
         }
+        guard SafeInput.isSafeDisplayText(manifest.name) else {
+            throw ExtensionManifestError.manifestLimitExceeded("name contains unsafe formatting characters")
+        }
         guard manifest.name.utf8.count <= maximumNameBytes else {
             throw ExtensionManifestError.manifestLimitExceeded(
                 "name may contain at most \(maximumNameBytes) UTF-8 bytes"
             )
         }
-        if let description = manifest.description,
-           description.utf8.count > maximumDescriptionBytes {
-            throw ExtensionManifestError.manifestLimitExceeded(
-                "description may contain at most \(maximumDescriptionBytes) UTF-8 bytes"
-            )
+        if let description = manifest.description {
+            guard description.utf8.count <= maximumDescriptionBytes,
+                  SafeInput.isSafeDisplayText(description, allowsNewlines: true) else {
+                throw ExtensionManifestError.manifestLimitExceeded(
+                    "description is unsafe or exceeds \(maximumDescriptionBytes) UTF-8 bytes"
+                )
+            }
         }
-        guard isValidVersion(manifest.version) else {
+        guard manifest.version.utf8.count <= 64, isValidVersion(manifest.version) else {
             throw ExtensionManifestError.invalidVersion(manifest.version)
         }
 
@@ -72,9 +124,16 @@ public enum ManifestValidator {
                 "at most \(maximumAPIPermissionCount) API permissions are allowed"
             )
         }
-        for permission in manifest.permissions where !supportedAPIPermissions.contains(permission) {
+        for permission in manifest.permissions {
+            guard permission.utf8.count <= 128 else {
+                throw ExtensionManifestError.manifestLimitExceeded(
+                    "an API permission exceeds 128 UTF-8 bytes"
+                )
+            }
+            guard supportedAPIPermissions.contains(permission) else {
             // Unknown permissions are rejected rather than silently creating a false sense of compatibility.
             throw ExtensionManifestError.unsupportedPermission(permission)
+            }
         }
         guard manifest.hostPermissions.count <= maximumHostPermissionCount else {
             throw ExtensionManifestError.manifestLimitExceeded(
@@ -90,9 +149,9 @@ public enum ManifestValidator {
             )
         }
         if let title = manifest.action?.defaultTitle,
-           title.utf8.count > maximumActionTitleBytes {
+           (title.utf8.count > maximumActionTitleBytes || !SafeInput.isSafeDisplayText(title)) {
             throw ExtensionManifestError.manifestLimitExceeded(
-                "action.default_title may contain at most \(maximumActionTitleBytes) UTF-8 bytes"
+                "action.default_title is unsafe or exceeds \(maximumActionTitleBytes) UTF-8 bytes"
             )
         }
 

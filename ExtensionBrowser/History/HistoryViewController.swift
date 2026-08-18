@@ -6,6 +6,7 @@ final class HistoryViewController: UITableViewController {
     private let onOpen: (URL) -> Void
     private var entries: [HistoryEntry] = []
     private let relativeDateFormatter = RelativeDateTimeFormatter()
+    private var reloadGeneration = 0
 
     init(store: HistoryStore, onOpen: @escaping (URL) -> Void) {
         self.store = store
@@ -51,7 +52,7 @@ final class HistoryViewController: UITableViewController {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         var content = cell.defaultContentConfiguration()
         content.text = entry.title
-        content.secondaryText = "\(entry.url.host ?? entry.url.absoluteString) · \(relativeDateFormatter.localizedString(for: entry.visitedAt, relativeTo: Date()))"
+        content.secondaryText = "\(SafeInput.displayHost(for: entry.url, fallback: entry.url.absoluteString)) · \(relativeDateFormatter.localizedString(for: entry.visitedAt, relativeTo: Date()))"
         content.secondaryTextProperties.numberOfLines = 2
         content.image = UIImage(systemName: "clock.fill")
         content.imageProperties.tintColor = KiwiTheme.accentDeep
@@ -85,6 +86,7 @@ final class HistoryViewController: UITableViewController {
                     self.updateEmptyState()
                     completion(true)
                 } catch {
+                    self.showError("The history item could not be removed. Try again.")
                     completion(false)
                 }
             }
@@ -94,12 +96,17 @@ final class HistoryViewController: UITableViewController {
     }
 
     @objc private func reload() {
+        reloadGeneration += 1
+        let generation = reloadGeneration
         Task { [weak self] in
             guard let self else { return }
             do {
-                self.entries = try await self.store.entries()
+                let entries = try await self.store.entries()
+                guard generation == self.reloadGeneration else { return }
+                self.entries = entries
             } catch {
-                AppLog.browser.error("Could not load history: \(error.localizedDescription, privacy: .public)")
+                guard generation == self.reloadGeneration else { return }
+                AppLog.browser.error("Could not load history: \(error.localizedDescription, privacy: .private)")
                 self.entries = []
             }
             self.tableView.reloadData()
@@ -122,7 +129,8 @@ final class HistoryViewController: UITableViewController {
                 do {
                     try await self.store.clear()
                 } catch {
-                    AppLog.browser.error("Could not clear history: \(error.localizedDescription, privacy: .public)")
+                    AppLog.browser.error("Could not clear history: \(error.localizedDescription, privacy: .private)")
+                    self.showError("History could not be cleared. Try again.")
                 }
                 self.reload()
             }
@@ -147,5 +155,12 @@ final class HistoryViewController: UITableViewController {
 
     @objc private func close() {
         dismiss(animated: true)
+    }
+
+    private func showError(_ message: String) {
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "History Error", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 }

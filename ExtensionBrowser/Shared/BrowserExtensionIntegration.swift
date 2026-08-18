@@ -124,7 +124,7 @@ protocol BrowserExtensionHost: AnyObject {
     var extensionActiveTab: BrowserTabDescriptor? { get }
 
     @discardableResult
-    func openTabFromExtension(url: URL?, activate: Bool) -> UUID
+    func openTabFromExtension(url: URL?, activate: Bool) throws -> UUID
 }
 
 @MainActor

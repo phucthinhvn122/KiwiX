@@ -30,10 +30,17 @@ actor HistoryStore {
         try loadEntries().sorted { $0.visitedAt > $1.visitedAt }
     }
 
-    func recordVisit(url: URL, title: String, at date: Date = Date()) throws {
-        guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
+    func recordVisit(
+        url: URL,
+        title: String,
+        at date: Date = Date(),
+        isPrivate: Bool = false
+    ) throws {
+        guard !isPrivate,
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              SafePersistence.isSafePersistedURL(url) else { return }
         var current = try loadEntries()
-        current.insert(HistoryEntry(title: title, url: url, visitedAt: date), at: 0)
+        current.insert(HistoryEntry(title: SafePersistence.title(title), url: url, visitedAt: date), at: 0)
         if current.count > maximumEntryCount {
             current.removeLast(current.count - maximumEntryCount)
         }
@@ -61,12 +68,50 @@ actor HistoryStore {
     private func loadEntries() throws -> [HistoryEntry] {
         let fileURL = try historyFileURL(createDirectory: false)
         guard fileManager.fileExists(atPath: fileURL.path) else { return [] }
-        return try decoder.decode([HistoryEntry].self, from: Data(contentsOf: fileURL))
+        let data: Data
+        do {
+            data = try BoundedFileReader.read(
+                from: fileURL,
+                maximumByteCount: SafePersistence.maximumHistoryBytes,
+                fileManager: fileManager
+            )
+        } catch {
+            quarantineCorruptHistory(at: fileURL)
+            return []
+        }
+        do {
+            try BoundedJSONPreflight.validate(
+                data,
+                maximumStructuralTokens: maximumEntryCount * 16
+            )
+            let decoded = try decoder.decode([HistoryEntry].self, from: data)
+            return decoded.prefix(maximumEntryCount).filter {
+                SafePersistence.isSafePersistedURL($0.url) &&
+                    $0.title.utf8.count <= SafePersistence.maximumTitleBytes
+            }
+        } catch {
+            quarantineCorruptHistory(at: fileURL)
+            return []
+        }
     }
 
     private func saveEntries(_ entries: [HistoryEntry]) throws {
         let fileURL = try historyFileURL(createDirectory: true)
-        try encoder.encode(entries).write(to: fileURL, options: [.atomic])
+        var lower = 0
+        var upper = min(entries.count, maximumEntryCount)
+        var best = Data("[]".utf8)
+        while lower <= upper {
+            let count = (lower + upper) / 2
+            let data = try encoder.encode(Array(entries.prefix(count)))
+            if data.count <= SafePersistence.maximumHistoryBytes {
+                best = data
+                lower = count + 1
+            } else {
+                upper = count - 1
+            }
+        }
+        try best.write(to: fileURL, options: [.atomic])
+        try AppDataProtectionPolicy.apply(to: fileURL, category: .browserState, fileManager: fileManager)
     }
 
     private func historyFileURL(createDirectory: Bool) throws -> URL {
@@ -91,5 +136,14 @@ actor HistoryStore {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
         return directory.appendingPathComponent("History-v1.json")
+    }
+
+    private func quarantineCorruptHistory(at url: URL) {
+        let target = url.deletingLastPathComponent().appendingPathComponent(
+            "\(url.lastPathComponent).corrupt-\(UUID().uuidString)"
+        )
+        if (try? fileManager.moveItem(at: url, to: target)) != nil {
+            try? AppDataProtectionPolicy.apply(to: target, category: .browserState, fileManager: fileManager)
+        }
     }
 }

@@ -72,7 +72,8 @@ public enum ContentScriptSourceBuilder {
     public static func prepare(
         installedExtension: InstalledExtension,
         repository: ExtensionRepository,
-        limits: ContentScriptPreparationLimits = .default
+        limits: ContentScriptPreparationLimits = .default,
+        allowedHostPatterns: Set<String>? = nil
     ) async throws -> [PreparedContentScript] {
         // Decoding, concatenating and guarding up to the bounded 16 MiB source set
         // stays off the main actor. Only WebKit object creation returns to MainActor.
@@ -80,7 +81,8 @@ public enum ContentScriptSourceBuilder {
             try await buildSources(
                 installedExtension: installedExtension,
                 repository: repository,
-                limits: limits
+                limits: limits,
+                allowedHostPatterns: allowedHostPatterns
             )
         }.value
         let world = WKContentWorld.world(name: "ExtensionBrowser.Extension.\(installedExtension.id.rawValue)")
@@ -90,7 +92,8 @@ public enum ContentScriptSourceBuilder {
     nonisolated private static func buildSources(
         installedExtension: InstalledExtension,
         repository: ExtensionRepository,
-        limits: ContentScriptPreparationLimits
+        limits: ContentScriptPreparationLimits,
+        allowedHostPatterns: Set<String>?
     ) async throws -> [BuiltContentScriptSource] {
         let rules = try ExtensionRuleCompiler.compile(
             manifest: installedExtension.manifest,
@@ -102,7 +105,28 @@ public enum ContentScriptSourceBuilder {
         var referencedSourceBytes = 0
         var preparedSourceBytes = 0
 
-        for (index, rule) in rules.enumerated() {
+        for (index, compiledRule) in rules.enumerated() {
+            let includePatterns = try allowedHostPatterns.map { sources in
+                let grants = try sources.map(WebExtensionMatchPattern.init)
+                return Array(Set(grants.flatMap { grant in
+                    compiledRule.includePatterns.compactMap { declared -> WebExtensionMatchPattern? in
+                        if declared.encompasses(grant) { return grant }
+                        if grant.encompasses(declared) { return declared }
+                        return nil
+                    }
+                }))
+            } ?? compiledRule.includePatterns
+            guard !includePatterns.isEmpty else { continue }
+            let rule = CompiledContentScript(
+                extensionID: compiledRule.extensionID,
+                manifestIndex: compiledRule.manifestIndex,
+                includePatterns: includePatterns,
+                excludePatterns: compiledRule.excludePatterns,
+                javascript: compiledRule.javascript,
+                css: compiledRule.css,
+                runAt: compiledRule.runAt,
+                allFrames: compiledRule.allFrames
+            )
             let manifestScript = installedExtension.manifest.contentScripts[index]
             var javaScriptParts: [String] = []
             javaScriptParts.reserveCapacity(manifestScript.javascript.count)

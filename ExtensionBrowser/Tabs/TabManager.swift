@@ -21,6 +21,18 @@ extension TabManagerDelegate {
 
 @MainActor
 final class TabManager {
+    enum TabCreationError: LocalizedError, Equatable {
+        case maximumTabCountReached(Int)
+
+        var errorDescription: String? {
+            switch self {
+            case .maximumTabCountReached(let limit):
+                return "The browser can keep at most \(limit) tabs open. Close a tab and try again."
+            }
+        }
+    }
+
+    static let defaultMaximumTabCount = SafePersistence.maximumTabCount
     weak var delegate: TabManagerDelegate?
 
     private(set) var tabs: [Tab] = []
@@ -34,17 +46,20 @@ final class TabManager {
     private var lifecycleTask: Task<Void, Never>?
     private var persistenceTask: Task<Void, Never>?
     private var lifecycleGeneration = 0
+    private let maximumTabCount: Int
 
     init(
         webViewFactory: WebViewFactory? = nil,
         store: TabStore? = nil,
         snapshotManager: TabSnapshotManager? = nil,
-        maximumWarmTabs: Int = 3
+        maximumWarmTabs: Int = 3,
+        maximumTabCount: Int = TabManager.defaultMaximumTabCount
     ) {
         self.webViewFactory = webViewFactory ?? WebViewFactory()
         self.store = store ?? TabStore()
         self.snapshotManager = snapshotManager ?? TabSnapshotManager()
         lifecyclePolicy = TabLifecycleManager(maximumWarmTabs: maximumWarmTabs)
+        self.maximumTabCount = max(1, maximumTabCount)
     }
 
     var selectedTab: Tab? {
@@ -72,17 +87,17 @@ final class TabManager {
         do {
             session = try await store.load()
         } catch {
-            AppLog.tabs.error("Could not restore tabs: \(error.localizedDescription, privacy: .public)")
+            AppLog.tabs.error("Could not restore tabs: \(error.localizedDescription, privacy: .private)")
             session = nil
         }
 
         if let session {
             // Private records are ignored defensively even if an older build wrote one.
-            tabs = session.tabs.filter { !$0.isPrivate }.map(Tab.init(record:))
+            tabs = session.tabs.filter { !$0.isPrivate }.prefix(maximumTabCount).map(Tab.init(record:))
         }
 
         guard !tabs.isEmpty else {
-            _ = createTab(url: nil, isPrivate: false, select: true)
+            _ = try? createTab(url: nil, isPrivate: false, select: true)
             return
         }
 
@@ -104,7 +119,9 @@ final class TabManager {
         Task { [weak self] in
             guard let self else { return }
             for tab in backgroundTabs {
+                guard self.tab(id: tab.id) === tab else { continue }
                 await self.snapshotManager.loadSnapshot(for: tab)
+                guard self.tab(id: tab.id) === tab else { continue }
                 self.delegate?.tabManager(self, didUpdate: tab)
             }
         }
@@ -115,7 +132,10 @@ final class TabManager {
         url: URL? = nil,
         isPrivate: Bool = false,
         select: Bool = true
-    ) -> Tab {
+    ) throws -> Tab {
+        guard tabs.count < maximumTabCount else {
+            throw TabCreationError.maximumTabCountReached(maximumTabCount)
+        }
         let tab = Tab(url: url, isPrivate: isPrivate)
         tabs.append(tab)
 
@@ -138,7 +158,7 @@ final class TabManager {
         if wasSelected {
             selectedTabID = nil
             if tabs.isEmpty {
-                _ = createTab(url: nil, isPrivate: false, select: true)
+                _ = try? createTab(url: nil, isPrivate: false, select: true)
             } else {
                 let replacementIndex = min(index, tabs.count - 1)
                 selectTab(id: tabs[replacementIndex].id)
@@ -151,6 +171,9 @@ final class TabManager {
         closingTab.webView?.navigationDelegate = nil
         closingTab.webView?.uiDelegate = nil
         closingTab.webView = nil
+        if closingTab.isPrivate, !tabs.contains(where: \.isPrivate) {
+            webViewFactory.resetPrivateProfile()
+        }
         Task { [snapshotManager] in
             await snapshotManager.deleteSnapshot(for: closingTab)
         }
@@ -206,7 +229,11 @@ final class TabManager {
             tab.favicon = nil
         }
         tab.url = url
-        tab.title = url.host ?? (url.absoluteString == "about:blank" ? "New Tab" : url.absoluteString)
+        tab.title = SafePersistence.title(
+            url.absoluteString == "about:blank"
+                ? "New Tab"
+                : SafeInput.displayHost(for: url, fallback: url.absoluteString)
+        )
         tab.lastAccessDate = Date()
         tab.needsInitialNavigation = false
         tab.updateFaviconCandidate()
@@ -228,7 +255,7 @@ final class TabManager {
     func updateTab(id: UUID, title: String? = nil, url: URL? = nil) {
         guard let tab = tab(id: id) else { return }
         if let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            tab.title = title
+            tab.title = SafePersistence.title(title)
         }
         if let url {
             if tab.url != url {
@@ -292,7 +319,7 @@ final class TabManager {
         do {
             try await store.save(TabSession(selectedTabID: persistedSelection, tabs: records))
         } catch {
-            AppLog.tabs.error("Could not persist tabs: \(error.localizedDescription, privacy: .public)")
+            AppLog.tabs.error("Could not persist tabs: \(error.localizedDescription, privacy: .private)")
         }
     }
 

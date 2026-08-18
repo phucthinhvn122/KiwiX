@@ -53,6 +53,9 @@ struct ExtensionManagerView: View {
                                 extensionRow(item)
                                     .contentShape(Rectangle())
                                     .onTapGesture { detailExtension = item }
+                                    .accessibilityAction(named: "Show Details") {
+                                        detailExtension = item
+                                    }
                                     .swipeActions {
                                         Button(role: .destructive) { pendingRemoval = item } label: {
                                             Label("Remove", systemImage: "trash")
@@ -126,7 +129,9 @@ struct ExtensionManagerView: View {
             .interactiveDismissDisabled(true)
         }
         .sheet(item: $detailExtension) { item in
-            NavigationStack { ExtensionDetailsView(extensionItem: item) }
+            NavigationStack {
+                ExtensionDetailsView(extensionID: item.id, viewModel: viewModel)
+            }
         }
         .alert("Extension Error", isPresented: Binding(
             get: { viewModel.errorMessage != nil },
@@ -264,9 +269,10 @@ private struct ExtensionIconView: View {
                 return
             }
             imageData = await Task.detached(priority: .utility) {
-                let values = try? iconURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-                guard values?.isRegularFile == true, (values?.fileSize ?? 0) <= 2 * 1_024 * 1_024 else { return nil }
-                guard let data = try? Data(contentsOf: iconURL, options: [.mappedIfSafe]),
+                guard let data = try? BoundedFileReader.read(
+                        from: iconURL,
+                        maximumByteCount: 2 * 1_024 * 1_024
+                      ),
                       let source = CGImageSourceCreateWithData(data as CFData, nil),
                       let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
                         as? [CFString: Any],
@@ -294,10 +300,44 @@ private struct ExtensionImportConfirmationView: View {
                 Section("Extension") {
                     LabeledContent("Name", value: preview.manifest.name)
                     LabeledContent("Version", value: preview.manifest.version)
+                    LabeledContent("Extension ID", value: preview.id.rawValue)
+                        .textSelection(.enabled)
                     if let description = preview.manifest.description { Text(description) }
                 }
-                Section("Requested Access") {
-                    ExtensionPermissionListView(permissions: preview.requestedPermissions)
+                Section("Security & Provenance") {
+                    Label("Unverified extension", systemImage: "exclamationmark.shield.fill")
+                        .foregroundStyle(.red)
+                        .font(.headline)
+                    LabeledContent("Publisher", value: "Not verified")
+                    LabeledContent("Source", value: preview.sourceDescription)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Package SHA-256").font(.caption).foregroundStyle(.secondary)
+                        Text(preview.packageDigest).font(.caption.monospaced()).textSelection(.enabled)
+                    }
+                    Text("The package hash identifies these exact files; it does not verify who published them.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Section("Requested Browser Permissions") {
+                    ExtensionPermissionListView(permissions: preview.manifest.permissions)
+                }
+                Section("Requested Websites") {
+                    let websites = Array(Set(
+                        preview.manifest.hostPermissions + preview.manifest.contentScripts.flatMap(\.matches)
+                    )).sorted()
+                    if websites.isEmpty {
+                        Text("No website access requested").foregroundStyle(.secondary)
+                    } else {
+                        ExtensionPermissionListView(permissions: websites)
+                    }
+                    if websites.contains("<all_urls>") {
+                        Label(
+                            "Requests access to read and change data on all websites. This access is off until you enable it in Extension Details.",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .foregroundStyle(.red)
+                        .font(.footnote)
+                    }
                 }
                 Section {
                     Text("Only JavaScript, HTML, CSS, and other web resources run. Native binaries and unsafe ZIP paths are rejected.")
@@ -309,37 +349,243 @@ private struct ExtensionImportConfirmationView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: cancel).disabled(isWorking) }
-                ToolbarItem(placement: .confirmationAction) { Button("Install", action: install).disabled(isWorking) }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Install", action: install).disabled(isWorking)
+                }
             }
         }
     }
 }
 
 private struct ExtensionDetailsView: View {
-    let extensionItem: InstalledExtension
+    private enum WebsiteAccessScope: String, CaseIterable, Identifiable {
+        case ask
+        case current
+        case selected
+        case all
+
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .ask: return "Ask"
+            case .current: return "Current Website"
+            case .selected: return "Selected Websites"
+            case .all: return "All Requested Websites"
+            }
+        }
+    }
+
+    let extensionID: ExtensionIdentifier
+    @ObservedObject var viewModel: ExtensionManagerViewModel
+    @State private var pendingAllWebsitesGrant = false
+    @State private var selectedHostname = ""
+    @State private var keepsSelectedWebsiteEditorOpen = false
     @Environment(\.dismiss) private var dismiss
 
+    private var extensionItem: InstalledExtension? {
+        viewModel.extensions.first(where: { $0.id == extensionID })
+    }
+
+    private var requestsAllWebsites: Bool {
+        guard let extensionItem else { return false }
+        return extensionItem.manifest.hostPermissions.contains("<all_urls>")
+            || extensionItem.manifest.contentScripts.flatMap(\.matches).contains("<all_urls>")
+    }
+
     var body: some View {
-        List {
-            Section("Extension") {
-                LabeledContent("Name", value: extensionItem.metadata.name)
-                LabeledContent("Version", value: extensionItem.metadata.version)
-                LabeledContent("ID", value: extensionItem.id.rawValue)
-                    .textSelection(.enabled)
-                if let description = extensionItem.metadata.extensionDescription { Text(description) }
-            }
-            Section("Permissions") {
-                ExtensionPermissionListView(
-                    permissions: Array(Set(
-                        extensionItem.metadata.requestedPermissions
-                            + extensionItem.metadata.hostPermissions
-                            + extensionItem.manifest.contentScripts.flatMap(\.matches)
-                    )).sorted()
-                )
+        Group {
+            if let extensionItem {
+                List {
+                    Section("Extension") {
+                        LabeledContent("Name", value: extensionItem.metadata.name)
+                        LabeledContent("Version", value: extensionItem.metadata.version)
+                        LabeledContent("ID", value: extensionItem.id.rawValue)
+                            .textSelection(.enabled)
+                        LabeledContent("Publisher", value: "Not verified")
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Package SHA-256").font(.caption).foregroundStyle(.secondary)
+                            Text(extensionItem.metadata.packageDigest)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                        }
+                        if let description = extensionItem.metadata.extensionDescription { Text(description) }
+                    }
+                    capabilitySection(extensionItem)
+                    websiteAccessSection(extensionItem)
+                }
+            } else {
+                ContentUnavailableView("Extension Not Found", systemImage: "puzzlepiece.extension")
             }
         }
         .navigationTitle("Extension Details")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        .confirmationDialog(
+            "Allow access to all websites?",
+            isPresented: Binding(
+                get: { pendingAllWebsitesGrant },
+                set: { pendingAllWebsitesGrant = $0 }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(requestsAllWebsites ? "Allow on All Websites" : "Allow on All Requested Websites", role: .destructive) {
+                keepsSelectedWebsiteEditorOpen = false
+                viewModel.replaceHostPermissions(grantAllDeclared: true, extensionID: extensionID)
+                pendingAllWebsitesGrant = false
+            }
+            Button("Cancel", role: .cancel) { pendingAllWebsitesGrant = false }
+        } message: {
+            Text(requestsAllWebsites
+                ? "This lets the extension read and change data on every website you visit. You can revoke it here at any time."
+                : "This enables every website pattern requested by the extension. You can revoke them here at any time.")
+        }
+    }
+
+    @ViewBuilder
+    private func capabilitySection(_ item: InstalledExtension) -> some View {
+        Section("Browser Permissions") {
+            if item.manifest.permissions.isEmpty {
+                Text("No browser permissions requested").foregroundStyle(.secondary)
+            }
+            ForEach(item.manifest.permissions, id: \.self) { permission in
+                if let capability = ExtensionCapability(rawValue: permission) {
+                    Toggle(isOn: Binding(
+                        get: { item.metadata.grantedPermissions.contains(permission) },
+                        set: {
+                            viewModel.setCapability(capability, granted: $0, extensionID: item.id)
+                        }
+                    )) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(permissionLabel(permission))
+                            Text(ExtensionPermissionManager.displayText(for: permission))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func websiteAccessSection(_ item: InstalledExtension) -> some View {
+        let declaredPatterns = Array(Set(
+            item.manifest.hostPermissions + item.manifest.contentScripts.flatMap(\.matches)
+        )).sorted()
+        let selectedHosts = Array(Set(item.metadata.grantedHostPermissions.compactMap {
+            try? WebExtensionMatchPattern($0).exactHostname
+        })).sorted()
+        Section {
+            if declaredPatterns.isEmpty {
+                Text("No website access requested").foregroundStyle(.secondary)
+            } else {
+                Picker("Website Access", selection: Binding(
+                    get: { websiteAccessScope(for: item, declaredPatterns: declaredPatterns) },
+                    set: { scope in setWebsiteAccessScope(scope, for: item) }
+                )) {
+                    ForEach(WebsiteAccessScope.allCases) { scope in
+                        Text(scope.label).tag(scope)
+                    }
+                }
+                .pickerStyle(.inline)
+
+                if websiteAccessScope(for: item, declaredPatterns: declaredPatterns) == .current {
+                    LabeledContent("Allowed Website", value: viewModel.currentWebsiteHostname ?? "Unavailable")
+                }
+
+                if websiteAccessScope(for: item, declaredPatterns: declaredPatterns) == .selected {
+                    ForEach(selectedHosts, id: \.self) { hostname in
+                        HStack {
+                            Label(hostname, systemImage: "checkmark.shield")
+                            Spacer()
+                            Button("Remove", role: .destructive) {
+                                viewModel.setWebsitePermission(hostname, granted: false, extensionID: item.id)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                    HStack {
+                        TextField("example.com", text: $selectedHostname)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                            .submitLabel(.done)
+                            .onSubmit { addSelectedWebsite(to: item) }
+                        Button("Add") { addSelectedWebsite(to: item) }
+                            .disabled(selectedHostname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    Text("Only websites covered by this extension's declared access can be added.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if declaredPatterns.contains("<all_urls>") {
+                    Label("All Websites includes every site you visit and requires a separate warning before it is enabled.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            }
+        } header: {
+            Text("Website Access")
+        } footer: {
+            Text("Ask keeps persistent website access off. Invoking an extension with Current Tab permission grants one-time access until navigation. Revocation applies immediately to future scripts and API calls.")
+        }
+    }
+
+    private func websiteAccessScope(
+        for item: InstalledExtension,
+        declaredPatterns: [String]
+    ) -> WebsiteAccessScope {
+        if keepsSelectedWebsiteEditorOpen { return .selected }
+        let grants = Set(item.metadata.grantedHostPermissions)
+        guard !grants.isEmpty else { return .ask }
+        if grants == Set(declaredPatterns) { return .all }
+        let hosts = Set(grants.compactMap { try? WebExtensionMatchPattern($0).exactHostname })
+        if hosts.count == 1, hosts.first == viewModel.currentWebsiteHostname { return .current }
+        return .selected
+    }
+
+    private func setWebsiteAccessScope(_ scope: WebsiteAccessScope, for item: InstalledExtension) {
+        switch scope {
+        case .ask:
+            keepsSelectedWebsiteEditorOpen = false
+            viewModel.replaceHostPermissions(grantAllDeclared: false, extensionID: item.id)
+        case .current:
+            keepsSelectedWebsiteEditorOpen = false
+            guard let hostname = viewModel.currentWebsiteHostname else {
+                viewModel.errorMessage = "Open a normal HTTP or HTTPS page before allowing the current website."
+                return
+            }
+            viewModel.replaceHostPermissions(withWebsiteHostname: hostname, extensionID: item.id)
+        case .selected:
+            let declared = Set(
+                item.manifest.hostPermissions + item.manifest.contentScripts.flatMap(\.matches)
+            )
+            let wasAll = Set(item.metadata.grantedHostPermissions) == declared
+            keepsSelectedWebsiteEditorOpen = true
+            if wasAll {
+                viewModel.replaceHostPermissions(grantAllDeclared: false, extensionID: item.id)
+            }
+        case .all:
+            keepsSelectedWebsiteEditorOpen = false
+            pendingAllWebsitesGrant = true
+        }
+    }
+
+    private func addSelectedWebsite(to item: InstalledExtension) {
+        let hostname = selectedHostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !hostname.isEmpty else { return }
+        selectedHostname = ""
+        viewModel.setWebsitePermission(hostname, granted: true, extensionID: item.id)
+    }
+
+    private func permissionLabel(_ permission: String) -> String {
+        switch permission {
+        case "activeTab": return "Current Tab When Invoked"
+        case "storage": return "Extension Storage"
+        case "tabs": return "Browser Tabs"
+        case "scripting": return "Run Scripts"
+        default: return permission
+        }
     }
 }

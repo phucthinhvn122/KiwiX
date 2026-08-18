@@ -45,13 +45,11 @@ final class ContentScriptInjectorTests: XCTestCase {
         let repository = ExtensionRepository(
             baseDirectoryURL: root.appendingPathComponent("Extensions", isDirectory: true)
         )
-        let identifier = try XCTUnwrap(
-            ExtensionIdentifier(rawValue: String(repeating: "e", count: 32))
-        )
+        let identity = try ExtensionIdentityGenerator.identity(forDirectory: staged)
         let installed = try await repository.install(ExtensionPackagePreview(
-            id: identifier,
+            id: identity.identifier,
             manifest: manifest,
-            packageDigest: String(repeating: "3", count: 64),
+            packageDigest: identity.digest,
             stagedDirectoryURL: staged,
             stagingContainerURL: root
         ))
@@ -73,5 +71,50 @@ final class ContentScriptInjectorTests: XCTestCase {
                 .contentScriptSourceLimitExceeded(limit: 2_500)
             )
         }
+    }
+
+    @MainActor
+    func testPreparationNarrowsDeclaredPatternToSelectedWebsiteGrant() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let staged = root.appendingPathComponent("package", isDirectory: true)
+        try FileManager.default.createDirectory(at: staged, withIntermediateDirectories: true)
+        let manifest = WebExtensionManifest(
+            manifestVersion: 3,
+            name: "Selected Website",
+            version: "1",
+            contentScripts: [WebExtensionManifest.ContentScript(
+                matches: ["https://*.example.com/*"],
+                javascript: ["content.js"]
+            )]
+        )
+        try JSONEncoder().encode(manifest).write(to: staged.appendingPathComponent("manifest.json"))
+        try Data("globalThis.selectedWebsiteInjected = true;".utf8)
+            .write(to: staged.appendingPathComponent("content.js"))
+        let repository = ExtensionRepository(
+            baseDirectoryURL: root.appendingPathComponent("Extensions", isDirectory: true)
+        )
+        let identity = try ExtensionIdentityGenerator.identity(forDirectory: staged)
+        let installed = try await repository.install(ExtensionPackagePreview(
+            id: identity.identifier,
+            manifest: manifest,
+            packageDigest: identity.digest,
+            stagedDirectoryURL: staged,
+            stagingContainerURL: root
+        ))
+
+        let prepared = try await ContentScriptSourceBuilder.prepare(
+            installedExtension: installed,
+            repository: repository,
+            allowedHostPatterns: ["https://shop.example.com/*"]
+        )
+
+        XCTAssertEqual(prepared.count, 1)
+        XCTAssertEqual(prepared[0].rule.includePatterns.map(\.source), ["https://shop.example.com/*"])
+        XCTAssertTrue(prepared[0].rule.matches(try XCTUnwrap(URL(string: "https://shop.example.com/cart"))))
+        XCTAssertFalse(prepared[0].rule.matches(try XCTUnwrap(URL(string: "https://other.example.com/"))))
     }
 }

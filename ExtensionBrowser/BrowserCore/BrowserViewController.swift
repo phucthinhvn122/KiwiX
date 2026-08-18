@@ -8,6 +8,7 @@ final class BrowserViewController: UIViewController {
     private let extensionBridge: BrowserExtensionBridge
     private let historyStore: HistoryStore
     private let downloadCoordinator: DownloadCoordinator
+    private let faviconService: FaviconService
 
     private let webContentContainer = UIView()
     private let toolbar = UIView()
@@ -32,19 +33,27 @@ final class BrowserViewController: UIViewController {
     private var extensionActions: [BrowserExtensionActionDescriptor] = []
     private var extensionActionRefreshTask: Task<Void, Never>?
     private var extensionActionRefreshGeneration = 0
+    private var extensionActionInvocationInProgress = false
+    private var faviconTasks: [UUID: Task<Void, Never>] = [:]
+    private var faviconGenerations: [UUID: Int] = [:]
+    private let externalNavigationRateLimiter = ExternalNavigationRateLimiter()
+    private let webDialogRateLimiter = WebDialogRateLimiter()
+    private let popupCreationRateLimiter = PopupCreationRateLimiter()
 
     init(
         tabManager: TabManager? = nil,
         settingsStore: BrowserSettingsStore? = nil,
         extensionBridge: BrowserExtensionBridge? = nil,
         historyStore: HistoryStore? = nil,
-        downloadCoordinator: DownloadCoordinator? = nil
+        downloadCoordinator: DownloadCoordinator? = nil,
+        faviconService: FaviconService? = nil
     ) {
         self.tabManager = tabManager ?? TabManager()
         self.settingsStore = settingsStore ?? .shared
         self.extensionBridge = extensionBridge ?? .shared
         self.historyStore = historyStore ?? HistoryStore()
         self.downloadCoordinator = downloadCoordinator ?? DownloadCoordinator()
+        self.faviconService = faviconService ?? FaviconService()
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -186,8 +195,8 @@ final class BrowserViewController: UIViewController {
         addressField.clipsToBounds = true
         addressField.layer.borderColor = UIColor.clear.cgColor
         addressField.layer.borderWidth = 1.5
-        addressField.font = .systemFont(ofSize: 16, weight: .regular)
-        addressField.adjustsFontForContentSizeCategory = false
+        addressField.font = .preferredFont(forTextStyle: .body)
+        addressField.adjustsFontForContentSizeCategory = true
         addressField.isUserInteractionEnabled = true
         addressField.placeholder = "Search or enter an address"
         addressField.clearButtonMode = .whileEditing
@@ -253,9 +262,9 @@ final class BrowserViewController: UIViewController {
 
         for button in [backButton, forwardButton, newTabButton, tabsButton, menuButton] {
             button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 34).isActive = true
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         }
-        addressField.heightAnchor.constraint(equalToConstant: 42).isActive = true
+        addressField.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
 
         view.keyboardLayoutGuide.followsUndockedKeyboard = true
 
@@ -388,9 +397,8 @@ final class BrowserViewController: UIViewController {
         if tab.url?.absoluteString == "about:blank" || tab.url == nil {
             addressField.text = nil
         } else if let url = tab.url,
-                  ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
-                  let host = url.host {
-            addressField.text = host
+                  ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+            addressField.text = SafeInput.displayHost(for: url)
         } else {
             addressField.text = tab.url?.absoluteString
         }
@@ -414,6 +422,10 @@ final class BrowserViewController: UIViewController {
             ? KiwiTheme.privateAccent.withAlphaComponent(0.14)
             : KiwiTheme.fieldSurface
         addressField.placeholder = isPrivate ? "Private search or address" : "Search or enter an address"
+        addressField.accessibilityLabel = isPrivate ? "Private address and search" : "Address and search"
+        addressField.accessibilityHint = isPrivate
+            ? "Browsing activity in this tab is not saved to history or session restore. Downloads remain on this device."
+            : "Enter a website address or search terms."
         toolbarMaterial.effect = UIBlurEffect(
             style: isPrivate ? .systemUltraThinMaterialDark : .systemChromeMaterial
         )
@@ -465,7 +477,9 @@ final class BrowserViewController: UIViewController {
         tabConfiguration.imagePlacement = .leading
         tabConfiguration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var outgoing = incoming
-            outgoing.font = .systemFont(ofSize: 12, weight: .bold)
+            outgoing.font = UIFontMetrics(forTextStyle: .caption2).scaledFont(
+                for: .systemFont(ofSize: 12, weight: .bold)
+            )
             return outgoing
         }
         tabsButton.configuration = tabConfiguration
@@ -505,12 +519,19 @@ final class BrowserViewController: UIViewController {
     private func invokeExtensionAction(_ action: BrowserExtensionActionDescriptor) {
         guard let integration = extensionBridge.integration,
               let tab = extensionActiveTab,
-              !tab.isPrivate else {
+              !tab.isPrivate,
+              !extensionActionInvocationInProgress else {
             return
         }
+        extensionActionInvocationInProgress = true
+        menuButton.menu = makeBrowserMenu()
 
         Task { [weak self] in
             guard let self else { return }
+            defer {
+                self.extensionActionInvocationInProgress = false
+                self.menuButton.menu = self.makeBrowserMenu()
+            }
             do {
                 let invocation = try await integration.invokeAction(
                     extensionID: action.extensionID,
@@ -520,6 +541,12 @@ final class BrowserViewController: UIViewController {
                 case .noPopup:
                     break
                 case let .presentPopup(controller):
+                    guard self.extensionActiveTab?.id == tab.id,
+                          self.extensionActiveTab?.url == tab.url,
+                          UIApplication.shared.applicationState == .active,
+                          self.presentedViewController == nil else {
+                        return
+                    }
                     controller.modalPresentationStyle = .popover
                     if let popover = controller.popoverPresentationController {
                         popover.sourceView = self.menuButton
@@ -528,7 +555,11 @@ final class BrowserViewController: UIViewController {
                     self.present(controller, animated: true)
                 }
             } catch {
-                self.presentExtensionActionError(error)
+                if self.extensionActiveTab?.id == tab.id,
+                   self.extensionActiveTab?.url == tab.url,
+                   UIApplication.shared.applicationState == .active {
+                    self.presentExtensionActionError(error)
+                }
             }
             self.refreshExtensionActions()
         }
@@ -537,13 +568,13 @@ final class BrowserViewController: UIViewController {
     private func presentExtensionActionError(_ error: Error) {
         guard presentedViewController == nil else {
             AppLog.extensions.error(
-                "Extension action failed: \(error.localizedDescription, privacy: .public)"
+                "Extension action failed: \(error.localizedDescription, privacy: .private)"
             )
             return
         }
         let alert = UIAlertController(
             title: "Extension Action Failed",
-            message: error.localizedDescription,
+            message: SafeInput.userFacingError(error),
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "OK", style: .default))
@@ -587,6 +618,10 @@ final class BrowserViewController: UIViewController {
         let close = UIAction(title: "Close Tab", image: UIImage(systemName: "xmark.square"), attributes: .destructive) { [weak self] _ in
             guard let self, let id = self.tabManager.selectedTabID else { return }
             self.extensionBridge.integration?.extensionTabDidClose(id: id)
+            self.externalNavigationRateLimiter.remove(tabID: id)
+            self.webDialogRateLimiter.remove(tabID: id)
+            self.popupCreationRateLimiter.remove(tabID: id)
+            self.cancelFaviconLoad(tabID: id)
             self.tabManager.closeTab(id: id)
         }
         let settings = UIAction(title: "Settings", image: UIImage(systemName: "gearshape")) { [weak self] _ in
@@ -615,12 +650,14 @@ final class BrowserViewController: UIViewController {
                 title: "Extension Actions",
                 image: UIImage(systemName: "puzzlepiece.extension"),
                 children: extensionActions.map { descriptor in
-                    UIAction(
+                    let action = UIAction(
                         title: descriptor.title,
                         image: descriptor.iconData.flatMap(UIImage.init(data:))
                     ) { [weak self] _ in
                         self?.invokeExtensionAction(descriptor)
                     }
+                    if extensionActionInvocationInProgress { action.attributes = [.disabled] }
+                    return action
                 }
             )
             children.insert(extensionActionMenu, at: 3)
@@ -636,10 +673,14 @@ final class BrowserViewController: UIViewController {
     }
 
     private func createNewTab(isPrivate: Bool) {
-        let tab = tabManager.createTab(isPrivate: isPrivate, select: true)
-        addressField.text = nil
-        updatePrivateAppearance(for: tab)
-        addressField.becomeFirstResponder()
+        do {
+            let tab = try tabManager.createTab(isPrivate: isPrivate, select: true)
+            addressField.text = nil
+            updatePrivateAppearance(for: tab)
+            addressField.becomeFirstResponder()
+        } catch {
+            presentTabLimitError(error)
+        }
     }
 
     @objc private func createRegularTab() {
@@ -668,7 +709,8 @@ final class BrowserViewController: UIViewController {
             TabSwitcherViewController.Item(
                 id: $0.id,
                 title: $0.title,
-                urlText: $0.url?.host ?? $0.url?.absoluteString ?? "New Tab",
+                urlText: $0.url.map { SafeInput.displayHost(for: $0, fallback: $0.absoluteString) }
+                    ?? "New Tab",
                 isPrivate: $0.isPrivate,
                 lifecycleState: $0.state,
                 snapshot: $0.snapshot,
@@ -687,7 +729,8 @@ final class BrowserViewController: UIViewController {
     }
 
     private func shareCurrentPage() {
-        guard let url = tabManager.selectedTab?.url else { return }
+        guard let rawURL = tabManager.selectedTab?.url,
+              let url = SafeInput.credentialFreeURL(rawURL) else { return }
         let activity = UIActivityViewController(activityItems: [url], applicationActivities: nil)
         if let popover = activity.popoverPresentationController {
             popover.sourceView = menuButton
@@ -697,7 +740,8 @@ final class BrowserViewController: UIViewController {
     }
 
     private func openCurrentPageExternally() {
-        guard let url = tabManager.selectedTab?.url,
+        guard let rawURL = tabManager.selectedTab?.url,
+              let url = SafeInput.credentialFreeURL(rawURL),
               ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
             return
         }
@@ -733,7 +777,9 @@ final class BrowserViewController: UIViewController {
         let controller = DebugInfoViewController { [weak self] in
             guard let self else { return [:] }
             var information = [
-                "Current URL": self.tabManager.selectedTab?.url?.absoluteString ?? "None",
+                "Current URL": self.tabManager.selectedTab?.isPrivate == true
+                    ? "Private tab (redacted)"
+                    : self.tabManager.selectedTab?.url.map { SafeInput.displayURL($0) } ?? "None",
                 "Tabs": "\(self.tabManager.tabs.count)",
                 "Live WKWebViews": "\(self.tabManager.liveWebViewCount)",
                 "Memory warnings": "\(BrowserDiagnostics.shared.memoryWarningCount)",
@@ -763,7 +809,36 @@ final class BrowserViewController: UIViewController {
     @objc private func handleExtensionCreateTabRequest(_ notification: Notification) {
         let url = notification.userInfo?[BrowserExtensionNotifications.UserInfoKey.url] as? URL
         let activate = notification.userInfo?[BrowserExtensionNotifications.UserInfoKey.activate] as? Bool ?? true
-        _ = tabManager.createTab(url: url, isPrivate: false, select: activate)
+        if let url, !SafePersistence.isSafePersistedURL(url) { return }
+        do {
+            _ = try tabManager.createTab(url: url, isPrivate: false, select: activate)
+        } catch {
+            presentTabLimitError(error)
+        }
+    }
+
+    private func presentTabLimitError(_ error: Error) {
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(
+            title: "Couldn’t Open Tab",
+            message: SafeInput.userFacingError(error),
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
+    private func presentAddressInputError() {
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(
+            title: "Address Not Recognized",
+            message: "Enter a valid HTTP or HTTPS address without embedded credentials, or use shorter search terms.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Edit", style: .default) { [weak self] _ in
+            self?.addressField.becomeFirstResponder()
+        })
+        present(alert, animated: true)
     }
 
     @objc private func handleSettingsChange() {
@@ -773,9 +848,58 @@ final class BrowserViewController: UIViewController {
     private func showNavigationError(_ error: Error, for tab: Tab) {
         guard tab.id == tabManager.selectedTabID else { return }
         hideRestorationOverlay(animated: false)
-        errorView.show(message: error.localizedDescription) { [weak self] in
+        errorView.show(message: SafeInput.userFacingError(
+            error,
+            fallback: "Check your connection and try loading the page again."
+        )) { [weak self] in
             self?.errorView.hide()
             self?.displayedWebView?.reload()
+        }
+    }
+
+    private func cancelFaviconLoad(tabID: UUID) {
+        faviconGenerations[tabID, default: 0] += 1
+        faviconTasks.removeValue(forKey: tabID)?.cancel()
+    }
+
+    private func loadFavicon(for tab: Tab, in webView: WKWebView, pageURL: URL) {
+        cancelFaviconLoad(tabID: tab.id)
+        guard ["http", "https"].contains(pageURL.scheme?.lowercased() ?? "") else { return }
+        let generation = faviconGenerations[tab.id, default: 0]
+        let tabID = tab.id
+        let privacyMode: FaviconPrivacyMode = tab.isPrivate ? .private : .normal
+        faviconTasks[tabID] = Task { @MainActor [weak self, weak webView] in
+            guard let self, let webView else { return }
+            defer {
+                if self.faviconGenerations[tabID] == generation {
+                    self.faviconTasks.removeValue(forKey: tabID)
+                }
+            }
+            do {
+                let discovery = try await webView.evaluateJavaScript(FaviconService.discoveryJavaScript)
+                try Task.checkCancellation()
+                guard self.faviconGenerations[tabID] == generation,
+                      self.tabManager.tab(id: tabID) === tab,
+                      tab.webView === webView,
+                      webView.url == pageURL,
+                      let result = await self.faviconService.image(
+                        for: pageURL,
+                        javaScriptResult: discovery,
+                        privacyMode: privacyMode
+                      ) else { return }
+                try Task.checkCancellation()
+                guard self.faviconGenerations[tabID] == generation,
+                      tab.webView === webView,
+                      webView.url == pageURL else { return }
+                self.tabManager.updateFavicon(
+                    tabID: tabID,
+                    image: result.image,
+                    sourceURL: result.sourceURL,
+                    expectedPageURL: pageURL
+                )
+            } catch {
+                // Missing/invalid favicons and cancellation never affect navigation.
+            }
         }
     }
 
@@ -807,7 +931,7 @@ extension BrowserViewController: UITextFieldDelegate {
         textField.rightViewMode = .never
         if let url = tabManager.selectedTab?.url,
            url.absoluteString != "about:blank" {
-            textField.text = url.absoluteString
+            textField.text = SafeInput.displayURL(url)
         }
         UIView.animate(withDuration: 0.2) {
             self.controlsStack.isHidden = true
@@ -834,8 +958,11 @@ extension BrowserViewController: UITextFieldDelegate {
     }
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-        guard let input = textField.text,
-              let resolution = URLInputParser(searchEngine: settingsStore.selectedSearchEngine).resolve(input) else {
+        guard let input = textField.text, !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        guard let resolution = URLInputParser(searchEngine: settingsStore.selectedSearchEngine).resolve(input) else {
+            presentAddressInputError()
             return false
         }
         errorView.hide()
@@ -883,14 +1010,22 @@ extension BrowserViewController: TabSwitcherViewControllerDelegate {
 
     func tabSwitcher(_ controller: TabSwitcherViewController, didCloseTab id: UUID) {
         extensionBridge.integration?.extensionTabDidClose(id: id)
+        externalNavigationRateLimiter.remove(tabID: id)
+        webDialogRateLimiter.remove(tabID: id)
+        popupCreationRateLimiter.remove(tabID: id)
+        cancelFaviconLoad(tabID: id)
         tabManager.closeTab(id: id)
         controller.removeItem(id: id)
     }
 
     func tabSwitcher(_ controller: TabSwitcherViewController, createPrivateTab: Bool) {
-        _ = tabManager.createTab(isPrivate: createPrivateTab, select: true)
-        controller.dismiss(animated: true)
-        addressField.becomeFirstResponder()
+        do {
+            _ = try tabManager.createTab(isPrivate: createPrivateTab, select: true)
+            controller.dismiss(animated: true)
+            addressField.becomeFirstResponder()
+        } catch {
+            controller.dismiss(animated: true) { [weak self] in self?.presentTabLimitError(error) }
+        }
     }
 }
 
@@ -912,14 +1047,15 @@ extension BrowserViewController: BrowserExtensionHost {
     }
 
     @discardableResult
-    func openTabFromExtension(url: URL?, activate: Bool) -> UUID {
-        tabManager.createTab(url: url, isPrivate: false, select: activate).id
+    func openTabFromExtension(url: URL?, activate: Bool) throws -> UUID {
+        try tabManager.createTab(url: url, isPrivate: false, select: activate).id
     }
 }
 
 extension BrowserViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard let tab = tabManager.tab(containing: webView) else { return }
+        cancelFaviconLoad(tabID: tab.id)
         BrowserDiagnostics.shared.recordNavigationEvent()
         tabManager.updateTab(id: tab.id, url: webView.url)
         if tab.id == tabManager.selectedTabID {
@@ -951,14 +1087,21 @@ extension BrowserViewController: WKNavigationDelegate {
         if tab.id == tabManager.selectedTabID {
             hideRestorationOverlay(animated: true)
         }
+        if let pageURL = webView.url {
+            loadFavicon(for: tab, in: webView, pageURL: pageURL)
+        }
         if !tab.isPrivate {
             if let url = webView.url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
-                let title = webView.title ?? url.host ?? url.absoluteString
+                let title = webView.title ?? SafeInput.displayHost(for: url, fallback: url.absoluteString)
                 Task { [historyStore] in
                     do {
-                        try await historyStore.recordVisit(url: url, title: title)
+                        try await historyStore.recordVisit(
+                            url: url,
+                            title: title,
+                            isPrivate: tab.isPrivate
+                        )
                     } catch {
-                        AppLog.browser.error("Could not save history: \(error.localizedDescription, privacy: .public)")
+                        AppLog.browser.error("Could not save history: \(error.localizedDescription, privacy: .private)")
                     }
                 }
             }
@@ -1000,8 +1143,7 @@ extension BrowserViewController: WKNavigationDelegate {
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
-        guard let url = navigationAction.request.url,
-              navigationAction.targetFrame?.isMainFrame != false else {
+        guard let url = navigationAction.request.url else {
             decisionHandler(.allow)
             return
         }
@@ -1009,12 +1151,56 @@ extension BrowserViewController: WKNavigationDelegate {
         let scheme = url.scheme?.lowercased() ?? ""
         let internallySupportedSchemes = ["http", "https", "about", "file", "data", "blob"]
         guard !internallySupportedSchemes.contains(scheme) else {
-            decisionHandler(navigationAction.shouldPerformDownload ? .download : .allow)
+            guard navigationAction.shouldPerformDownload,
+                  let tab = tabManager.tab(containing: webView), tab.isPrivate else {
+                decisionHandler(navigationAction.shouldPerformDownload ? .download : .allow)
+                return
+            }
+            guard tab.id == tabManager.selectedTabID,
+                  webView === displayedWebView,
+                  UIApplication.shared.applicationState == .active,
+                  presentedViewController == nil else {
+                decisionHandler(.cancel)
+                return
+            }
+            let message = downloadCoordinator.confirmationMessage(expectedBytes: -1, isPrivate: true)
+            let alert = UIAlertController(title: "Download File?", message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in decisionHandler(.cancel) })
+            alert.addAction(UIAlertAction(title: "Download", style: .default) { _ in decisionHandler(.download) })
+            present(alert, animated: true)
             return
         }
 
         decisionHandler(.cancel)
-        UIApplication.shared.open(url)
+        guard let tab = tabManager.tab(containing: webView) else { return }
+        let decision = ExternalNavigationPolicy.decision(
+            for: url,
+            isUserActivated: navigationAction.navigationType == .linkActivated,
+            isTopLevel: navigationAction.sourceFrame.isMainFrame &&
+                (navigationAction.targetFrame == nil || navigationAction.targetFrame?.isMainFrame == true),
+            isActiveTab: tab.id == tabManager.selectedTabID && webView === displayedWebView,
+            isApplicationActive: UIApplication.shared.applicationState == .active
+        )
+        guard decision != .block, externalNavigationRateLimiter.consume(tabID: tab.id) else { return }
+
+        switch decision {
+        case .block:
+            return
+        case .open:
+            UIApplication.shared.open(url, options: [:])
+        case .confirm(let displayName):
+            guard presentedViewController == nil else { return }
+            let alert = UIAlertController(
+                title: "Open another app?",
+                message: "This website wants to open a \(displayName).",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+            alert.addAction(UIAlertAction(title: "Open", style: .default) { _ in
+                UIApplication.shared.open(url, options: [:])
+            })
+            present(alert, animated: true)
+        }
     }
 
     func webView(
@@ -1022,7 +1208,44 @@ extension BrowserViewController: WKNavigationDelegate {
         decidePolicyFor navigationResponse: WKNavigationResponse,
         decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
     ) {
-        decisionHandler(navigationResponse.canShowMIMEType ? .allow : .download)
+        guard !navigationResponse.canShowMIMEType else {
+            decisionHandler(.allow)
+            return
+        }
+        let expectedBytes = navigationResponse.response.expectedContentLength
+        if downloadCoordinator.exceedsMaximumSize(expectedBytes: expectedBytes) {
+            decisionHandler(.cancel)
+            presentDownloadPolicyAlert(
+                message: downloadCoordinator.maximumSizeMessage
+            )
+            return
+        }
+        let tab = tabManager.tab(containing: webView)
+        guard let message = downloadCoordinator.confirmationMessage(
+            expectedBytes: expectedBytes,
+            isPrivate: tab?.isPrivate == true
+        ) else {
+            decisionHandler(.download)
+            return
+        }
+        guard tab?.id == tabManager.selectedTabID,
+              webView === displayedWebView,
+              UIApplication.shared.applicationState == .active,
+              presentedViewController == nil else {
+            decisionHandler(.cancel)
+            return
+        }
+        let alert = UIAlertController(title: "Download File?", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in decisionHandler(.cancel) })
+        alert.addAction(UIAlertAction(title: "Download", style: .default) { _ in decisionHandler(.download) })
+        present(alert, animated: true)
+    }
+
+    private func presentDownloadPolicyAlert(message: String) {
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "Download Blocked", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 
     func webView(
@@ -1071,13 +1294,24 @@ extension BrowserViewController: WKUIDelegate {
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        guard navigationAction.targetFrame == nil else { return nil }
-        let isPrivate = tabManager.tab(containing: webView)?.isPrivate ?? false
-        _ = tabManager.createTab(
-            url: navigationAction.request.url,
-            isPrivate: isPrivate,
-            select: true
-        )
+        guard navigationAction.targetFrame == nil,
+              navigationAction.navigationType == .linkActivated,
+              let sourceTab = tabManager.tab(containing: webView),
+              sourceTab.id == tabManager.selectedTabID,
+              webView === displayedWebView,
+              UIApplication.shared.applicationState == .active,
+              popupCreationRateLimiter.consume(tabID: sourceTab.id),
+              let targetURL = navigationAction.request.url,
+              SafePersistence.isSafePersistedURL(targetURL) else { return nil }
+        do {
+            _ = try tabManager.createTab(
+                url: targetURL,
+                isPrivate: sourceTab.isPrivate,
+                select: true
+            )
+        } catch {
+            presentTabLimitError(error)
+        }
         return nil
     }
 
@@ -1087,7 +1321,17 @@ extension BrowserViewController: WKUIDelegate {
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping () -> Void
     ) {
-        let alert = UIAlertController(title: webView.title, message: message, preferredStyle: .alert)
+        guard let tab = tabManager.tab(containing: webView),
+              tab.id == tabManager.selectedTabID,
+              webView === displayedWebView,
+              UIApplication.shared.applicationState == .active,
+              presentedViewController == nil,
+              webDialogRateLimiter.consume(tabID: tab.id) else {
+            completionHandler()
+            return
+        }
+        let content = WebDialogPolicy.content(pageURL: frame.request.url, message: message)
+        let alert = UIAlertController(title: content.title, message: content.message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() })
         present(alert, animated: true)
     }
@@ -1098,7 +1342,17 @@ extension BrowserViewController: WKUIDelegate {
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping (Bool) -> Void
     ) {
-        let alert = UIAlertController(title: webView.title, message: message, preferredStyle: .alert)
+        guard let tab = tabManager.tab(containing: webView),
+              tab.id == tabManager.selectedTabID,
+              webView === displayedWebView,
+              UIApplication.shared.applicationState == .active,
+              presentedViewController == nil,
+              webDialogRateLimiter.consume(tabID: tab.id) else {
+            completionHandler(false)
+            return
+        }
+        let content = WebDialogPolicy.content(pageURL: frame.request.url, message: message)
+        let alert = UIAlertController(title: content.title, message: content.message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(false) })
         alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
         present(alert, animated: true)
@@ -1111,11 +1365,23 @@ extension BrowserViewController: WKUIDelegate {
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping (String?) -> Void
     ) {
-        let alert = UIAlertController(title: webView.title, message: prompt, preferredStyle: .alert)
-        alert.addTextField { $0.text = defaultText }
+        guard let tab = tabManager.tab(containing: webView),
+              tab.id == tabManager.selectedTabID,
+              webView === displayedWebView,
+              UIApplication.shared.applicationState == .active,
+              presentedViewController == nil,
+              webDialogRateLimiter.consume(tabID: tab.id) else {
+            completionHandler(nil)
+            return
+        }
+        let content = WebDialogPolicy.content(pageURL: frame.request.url, message: prompt, defaultText: defaultText)
+        let alert = UIAlertController(title: content.title, message: content.message, preferredStyle: .alert)
+        alert.addTextField { $0.text = content.defaultText }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(nil) })
         alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak alert] _ in
-            completionHandler(alert?.textFields?.first?.text)
+            completionHandler(alert?.textFields?.first?.text.map {
+                SafeInput.utf8Prefix($0, maximumByteCount: WebDialogPolicy.maximumDefaultTextByteCount)
+            })
         })
         present(alert, animated: true)
     }

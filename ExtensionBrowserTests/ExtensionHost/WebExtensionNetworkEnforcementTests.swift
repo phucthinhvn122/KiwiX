@@ -3,6 +3,14 @@ import WebKit
 import XCTest
 @testable import ExtensionBrowser
 
+enum ControlRuleListError: Error, LocalizedError {
+    case compiledToNil
+
+    var errorDescription: String? {
+        "WKContentRuleListStore reported neither a compiled rule list nor an error."
+    }
+}
+
 /// Retains the navigation callbacks: `WKWebView.navigationDelegate` is weak, so an inline delegate
 /// would be deallocated before the first callback.
 @MainActor
@@ -30,15 +38,28 @@ final class NavigationSettledWaiter: NSObject, WKNavigationDelegate {
 /// rules without enforcing them?
 ///
 /// M2 could not tell the difference and said so — the harness reports the API as present, which
-/// DECISIONS §4.2.5 explicitly refuses to count as a pass. Three things make the difference here:
+/// DECISIONS §4.2.5 explicitly refuses to count as a pass. What makes an answer here falsifiable:
 ///
 ///   * A project-controlled server on `127.0.0.1`. Loopback needs no DNS, so a request that never
 ///     arrives was suppressed; it cannot be a name that failed to resolve. That confound is why
 ///     the M2 fixture (`blocked.kiwix.test`) could not be used as evidence.
-///   * A baseline phase with **no extension loaded**, proving the same subresource is fetched
+///   * A **baseline** phase with no extension loaded, proving the subresources are fetched
 ///     normally. Without it, absence proves nothing.
-///   * Ordering. The two blocked scripts appear before the allowed one in the page, so the arrival
-///     of the allowed sibling proves the earlier two had already been offered to the network stack.
+///   * Ordering. `allowed.js` is last in every page, so its arrival proves the earlier scripts had
+///     already been offered to the network stack.
+///
+/// Run 32233216520 measured "rules installed, nothing blocked" 392 ms after the extension reported
+/// its rules ready. That is not yet a conclusion, because two explanations survived it, and both
+/// were mine to rule out rather than WebKit's to answer:
+///
+///   * **Timing** — `WKContentRuleList` compilation is asynchronous and 392 ms may simply be too
+///     soon. The `late` phase repeats the identical navigation after a deliberate delay.
+///   * **Loopback exemption** — if WebKit applies no content blocking at all to `127.0.0.1`, the
+///     whole apparatus measures nothing. The `control` phase compiles a `WKContentRuleList`
+///     directly through `WKContentRuleListStore`, the same machinery WebKit's own DNR support is
+///     built on, and attaches it to a web view built by the shipping factory. If that blocks while
+///     the extension's rules do not, loopback is exonerated and the defect is specific to the
+///     `WKWebExtension` path.
 @MainActor
 final class WebExtensionNetworkEnforcementTests: XCTestCase {
     private var temporaryRoot: URL!
@@ -48,10 +69,20 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
     private var port: UInt16 = 0
     private var window: UIWindow!
     private var waiters: [NavigationSettledWaiter] = []
+    private var compiledRuleListIdentifier: String?
 
-    /// Blocked first, allowed last. The order is the argument, not a detail.
-    private static let subresources = ["blocked-static.js", "blocked-dynamic.js", "allowed.js"]
-    private static let phases = ["baseline", "enforced"]
+    /// `allowed.js` last. The order is the argument, not a detail.
+    private static let subresources = [
+        "blocked-static.js",
+        "blocked-dynamic.js",
+        "blocked-control.js",
+        "allowed.js"
+    ]
+    private static let phases = ["baseline", "early", "late", "control"]
+
+    /// How long to let WebKit finish compiling before the second attempt. Long enough that
+    /// "compilation had not finished" stops being a credible reading of the result.
+    private static let compilationGrace: TimeInterval = 8
 
     override func setUp() async throws {
         try await super.setUp()
@@ -98,8 +129,7 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
         host.attach(tabManager: tabManager)
         host.startSession()
 
-        // Off-screen but real: a web view with no window has bitten this project before, and the
-        // shipping app never runs one detached.
+        // Off-screen but real: the shipping app never runs a detached web view.
         window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
         window.isHidden = true
         window.makeKeyAndVisible()
@@ -121,6 +151,16 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
         host?.endSession()
         host = nil
         tabManager = nil
+
+        // Compiled rule lists live in a store on disk, so leaving one behind would leak state into
+        // the next run of this suite.
+        if let identifier = compiledRuleListIdentifier, let store = WKContentRuleListStore.default() {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                store.removeContentRuleList(forIdentifier: identifier) { _ in continuation.resume() }
+            }
+        }
+        compiledRuleListIdentifier = nil
+
         if let temporaryRoot {
             try? FileManager.default.removeItem(at: temporaryRoot)
         }
@@ -200,6 +240,15 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
         }
     }
 
+    /// Loads one phase page and returns once its last subresource has arrived or the wait expires.
+    /// The return value is only "did the trailing allowed script make it", which is the guard every
+    /// negative assertion in this file depends on.
+    @discardableResult
+    private func runPhase(_ phase: String, in webView: WKWebView) async throws -> Bool {
+        try await load("/\(phase).html", in: webView)
+        return await waitForRequest("/\(phase)/allowed.js")
+    }
+
     /// Bounded chance for a path to arrive before a negative assertion may conclude it never will.
     private func waitForRequest(_ path: String, timeout: TimeInterval = 10) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
@@ -210,15 +259,46 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
         return server.received(path)
     }
 
+    // MARK: - Positive control
+
+    /// Compiles a block rule with `WKContentRuleListStore` — public API, and the same content-rule
+    /// machinery WebKit's `declarativeNetRequest` support is implemented on top of.
+    private func compileControlRuleList() async throws -> WKContentRuleList {
+        let identifier = "kiwix-enforcement-control-\(UUID().uuidString)"
+        let store = try XCTUnwrap(
+            WKContentRuleListStore.default(),
+            "No default content rule list store; the positive control cannot run."
+        )
+        let json = """
+        [{"trigger":{"url-filter":"blocked-control","resource-type":["script"]},"action":{"type":"block"}}]
+        """
+
+        let list: WKContentRuleList = try await withCheckedThrowingContinuation { continuation in
+            store.compileContentRuleList(
+                forIdentifier: identifier,
+                encodedContentRuleList: json
+            ) { list, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let list {
+                    continuation.resume(returning: list)
+                } else {
+                    continuation.resume(throwing: ControlRuleListError.compiledToNil)
+                }
+            }
+        }
+        compiledRuleListIdentifier = identifier
+        return list
+    }
+
     // MARK: - Tests
 
     func testDeclarativeNetRequestSuppressesARealRequest() async throws {
         let probeURL = try fixtureURL(named: "NetworkProbe")
 
-        // ---- Phase 1: baseline. No extension is loaded, so every subresource must arrive.
+        // ---- Phase 1: baseline. No extension loaded, so every subresource must arrive.
         let baselineWebView = try makeTabWebView()
-        try await load("/baseline.html", in: baselineWebView)
-        _ = await waitForRequest("/baseline/allowed.js")
+        try await runPhase("baseline", in: baselineWebView)
 
         for name in Self.subresources {
             XCTAssertTrue(
@@ -232,12 +312,15 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
         let ready = expectation(description: "network probe installed its rules")
         let readyGate = ResumeOnce()
         var readySignal: [String: Any]?
+        var matchedSignal: [String: Any]?
         var observedByWebRequest: [String] = []
         host.harnessChannel.onHandshake = { payload in
             switch payload["phase"] as? String {
             case "ready":
                 readySignal = payload
                 if readyGate.claim() { ready.fulfill() }
+            case "matched":
+                if matchedSignal == nil { matchedSignal = payload }
             case "webRequest":
                 if let url = payload["url"] as? String { observedByWebRequest.append(url) }
             default:
@@ -264,42 +347,64 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
                 + "static ruleset and a dynamic rule, so there is nothing to enforce."
         )
 
-        // ---- Phase 2: the same page, a fresh tab, the extension now live.
-        let enforcedWebView = try makeTabWebView()
-        try await load("/enforced.html", in: enforcedWebView)
+        // ---- Phase 2: immediately after the rules are reported ready.
+        let earlyWebView = try makeTabWebView()
+        let earlyAllowedArrived = try await runPhase("early", in: earlyWebView)
+        let earlyStaticBlocked = !server.received("/early/blocked-static.js")
+        let earlyDynamicBlocked = !server.received("/early/blocked-dynamic.js")
 
-        XCTAssertTrue(
-            server.received("/enforced.html"),
-            "The page itself never reached the server; nothing below can be interpreted."
-        )
-        // Hoisted out of the assertion: XCTAssert* takes an autoclosure, which cannot be async.
-        let allowedArrived = await waitForRequest("/enforced/allowed.js")
-        XCTAssertTrue(
-            allowedArrived,
-            "The allowed subresource never arrived, so the page did not get far enough for the "
-                + "negative assertions to mean anything. Observed: \(server.requestedPaths)"
-        )
+        // ---- Phase 3: the identical navigation, after a deliberate compilation grace period.
+        try await Task.sleep(nanoseconds: UInt64(Self.compilationGrace * 1_000_000_000))
+        let lateWebView = try makeTabWebView()
+        let lateAllowedArrived = try await runPhase("late", in: lateWebView)
+        let lateStaticBlocked = !server.received("/late/blocked-static.js")
+        let lateDynamicBlocked = !server.received("/late/blocked-dynamic.js")
 
-        let staticBlocked = !server.received("/enforced/blocked-static.js")
-        let dynamicBlocked = !server.received("/enforced/blocked-dynamic.js")
+        // ---- Phase 4: positive control. Our own rule list, WebKit's own enforcement path.
+        let controlList = try await compileControlRuleList()
+        let controlWebView = try makeTabWebView()
+        controlWebView.configuration.userContentController.add(controlList)
+        let controlAllowedArrived = try await runPhase("control", in: controlWebView)
+        let controlBlocked = !server.received("/control/blocked-control.js")
 
-        // Printed whether it passes or fails: this line is the measurement DECISIONS §4.2 asks for
-        // and it has to survive in the CI log either way.
-        print("KIWIX_DNR_ENFORCEMENT static=\(staticBlocked ? "blocked" : "reached") "
-            + "dynamic=\(dynamicBlocked ? "blocked" : "reached") "
+        // Printed whether the test passes or fails: this is the measurement DECISIONS §4.2 asks
+        // for and it has to survive in the CI log either way.
+        print("KIWIX_DNR_ENFORCEMENT "
+            + "earlyStatic=\(earlyStaticBlocked ? "blocked" : "reached") "
+            + "earlyDynamic=\(earlyDynamicBlocked ? "blocked" : "reached") "
+            + "lateStatic=\(lateStaticBlocked ? "blocked" : "reached") "
+            + "lateDynamic=\(lateDynamicBlocked ? "blocked" : "reached") "
+            + "control=\(controlBlocked ? "blocked" : "reached") "
             + "webRequestObserved=\(observedByWebRequest.count)")
+        print("KIWIX_DNR_MATCHED \(matchedSignal.map { "\($0)" } ?? "no signal")")
         print("KIWIX_DNR_PATHS \(server.requestedPaths.joined(separator: " "))")
         print("KIWIX_WEBREQUEST_URLS \(observedByWebRequest.prefix(20).joined(separator: " "))")
 
+        // ---- Apparatus first. If these fail, nothing above is interpretable.
+        XCTAssertTrue(earlyAllowedArrived, "early: allowed.js never arrived. \(server.requestedPaths)")
+        XCTAssertTrue(lateAllowedArrived, "late: allowed.js never arrived. \(server.requestedPaths)")
+        XCTAssertTrue(controlAllowedArrived, "control: allowed.js never arrived. \(server.requestedPaths)")
         XCTAssertTrue(
-            staticBlocked,
-            "A static declarativeNetRequest block rule did not stop the request: the server still "
-                + "logged /enforced/blocked-static.js. Observed: \(server.requestedPaths)"
+            controlBlocked,
+            "The positive control did not block. A WKContentRuleList compiled by this test, "
+                + "attached to a web view from the shipping factory, failed to suppress "
+                + "/control/blocked-control.js. Until this passes, no statement about "
+                + "declarativeNetRequest can be made from this test — the apparatus itself is "
+                + "not measuring anything. Observed: \(server.requestedPaths)"
+        )
+
+        // ---- The measurement.
+        XCTAssertTrue(
+            lateStaticBlocked,
+            "A static declarativeNetRequest block rule did not stop the request \(Int(Self.compilationGrace))s "
+                + "after the extension reported its ruleset enabled, while a hand-compiled rule list "
+                + "on the same server did block. Observed: \(server.requestedPaths)"
         )
         XCTAssertTrue(
-            dynamicBlocked,
-            "A dynamic declarativeNetRequest block rule did not stop the request: the server still "
-                + "logged /enforced/blocked-dynamic.js. Observed: \(server.requestedPaths)"
+            lateDynamicBlocked,
+            "A dynamic declarativeNetRequest block rule did not stop the request \(Int(Self.compilationGrace))s "
+                + "after getDynamicRules() reported it installed, while a hand-compiled rule list "
+                + "on the same server did block. Observed: \(server.requestedPaths)"
         )
     }
 }

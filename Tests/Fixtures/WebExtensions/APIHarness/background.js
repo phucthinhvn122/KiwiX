@@ -137,12 +137,14 @@
       await api.storage.session.set({ sessionKey: 1 });
       const read = await api.storage.session.get("sessionKey");
       if (read.sessionKey !== 1) throw new Error("value did not round-trip");
+      await api.storage.session.remove("sessionKey");
       return "ok";
     });
     await H.run("storage.sync.roundTrip", "storage", async () => {
       await api.storage.sync.set({ syncKey: 1 });
       const read = await api.storage.sync.get("syncKey");
       if (read.syncKey !== 1) throw new Error("value did not round-trip");
+      await api.storage.sync.remove("syncKey");
       return "ok";
     });
   }
@@ -184,8 +186,26 @@
       const cookies = await api.cookies.getAll({});
       return "count=" + cookies.length;
     });
-    await H.run("webRequest.onBeforeRequest.addListener", "network", () =>
-      String(typeof api.webRequest.onBeforeRequest.addListener === "function")
+    // Registration succeeding is not observation. Nothing here drives a request past the
+    // listener, so this can only ever be "available" (DECISIONS 4.2.5); real observation is a
+    // separate probe once a controlled test server exists.
+    H.record(
+      "webRequest.onBeforeRequest.register",
+      "network",
+      typeof (api.webRequest && api.webRequest.onBeforeRequest && api.webRequest.onBeforeRequest.addListener) ===
+        "function"
+        ? "available"
+        : "unsupported",
+      "listener registration only, no traffic observed"
+    );
+    // DECISIONS 4.2 requires DNR enforcement to be confirmed by observing a blocked or redirected
+    // request through a project-controlled URL. The harness page is served by loadSimulatedRequest
+    // and has no subresource origin we own, so a "blocked" result would be indistinguishable from
+    // a DNS failure. Deliberately not faked - see M2_REPORT.md.
+    H.skip(
+      "declarativeNetRequest.enforcement",
+      "network",
+      "needs a controlled test server to observe a blocked request (M3)"
     );
     await H.run("webNavigation.getAllFrames", "network", async () => {
       const frames = await api.webNavigation.getAllFrames({ tabId: -1 });
@@ -264,6 +284,31 @@
     await H.run("scripting.insertCSS", "scripting", async () => {
       await api.scripting.insertCSS({ target: { tabId: harnessTab.id }, css: "body { --kiwix: 1; }" });
       return "inserted";
+    });
+
+    await H.run("tabs.activate", "tabs", async () => {
+      // The harness tab was created active, so re-activating it would prove nothing. Switch away
+      // first, then back, and require the browser to report the change both times.
+      const others = (await api.tabs.query({})).filter((tab) => tab.id !== harnessTab.id);
+      if (others.length === 0) throw new Error("no second tab to switch away to");
+
+      // Preserve the shared flag: eventDeliveryProbes still needs to know it ever fired.
+      const seenBefore = events.tabsOnActivated;
+      events.tabsOnActivated = false;
+
+      await api.tabs.update(others[0].id, { active: true });
+      const away = await api.tabs.get(harnessTab.id);
+      if (away.active) throw new Error("harness tab stayed active after switching away");
+
+      await api.tabs.update(harnessTab.id, { active: true });
+      const back = await api.tabs.get(harnessTab.id);
+      if (!back.active) throw new Error("harness tab did not become active again");
+
+      const firedHere = events.tabsOnActivated;
+      events.tabsOnActivated = seenBefore || firedHere;
+      // Activation working while the event is missing is a different defect from activation not
+      // working at all, so the event result rides along in the detail instead of failing here.
+      return "switched=away+back onActivated=" + firedHere;
     });
 
     await H.run("tabs.remove", "tabs", async () => {
@@ -352,6 +397,12 @@
   }
 
   async function main() {
+    // Any single hang must not cost the entire matrix; whatever has been recorded still ships.
+    const watchdog = setTimeout(() => {
+      H.record("harness.watchdog", "core", "timeout", "probe run exceeded 30s");
+      sendViaBeacon(H.report()).catch(() => {});
+    }, 30000);
+
     installListeners();
     namespaceProbes();
     await coreProbes();
@@ -361,6 +412,7 @@
     await uiProbes();
     await tabProbes();
     eventDeliveryProbes();
+    clearTimeout(watchdog);
     await deliver();
   }
 

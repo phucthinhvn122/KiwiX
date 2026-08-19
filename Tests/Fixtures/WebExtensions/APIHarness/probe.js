@@ -27,22 +27,25 @@ globalThis.KiwiXHarness = (() => {
     return path.split(".").reduce((node, key) => (node == null ? undefined : node[key]), api);
   }
 
-  // A missing namespace is "unsupported"; a present namespace that blows up is "fail". The
-  // distinction is the entire value of the matrix.
+  // A missing namespace is "unsupported"; a hang is "timeout"; a present namespace that blows up
+  // is "fail". The distinction is the entire value of the matrix.
   function classify(error) {
     const message = error && error.message ? error.message : String(error);
+    if (/timed out/i.test(message)) return "timeout";
     return /is not a function|not supported|not implemented|undefined is not an object/i.test(message)
       ? "unsupported"
       : "fail";
   }
 
+  // Feature detection only. DECISIONS 4.2.5 forbids treating this as a pass, so it gets its own
+  // status: the symbol is there, nobody proved it does anything.
   function existence(id, area, path) {
     const value = resolve(path);
     if (value === undefined || value === null) {
       record(id, area, "unsupported", "missing");
       return false;
     }
-    record(id, area, "pass", typeof value);
+    record(id, area, "available", typeof value);
     return true;
   }
 
@@ -99,7 +102,7 @@ globalThis.KiwiXHarness = (() => {
   }
 
   function report() {
-    return { schema: 1, environment: environment(), probes };
+    return { schema: 2, environment: environment(), probes };
   }
 
   return { api, record, existence, run, skip, withTimeout, deferred, report, probes };

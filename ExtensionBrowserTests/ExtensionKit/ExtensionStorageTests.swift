@@ -84,7 +84,8 @@ final class ExtensionStorageTests: XCTestCase {
             seed: String(repeating: "e", count: 32),
             repository: repository
         )
-        let installed = try XCTUnwrap(try await repository.extensionWithID(identifier))
+        let record = try await repository.extensionWithID(identifier)
+        let installed = try XCTUnwrap(record)
         let storageURL = installed.storageURL.appendingPathComponent("local.json")
         try Data(#"{"broken":[[[}"#.utf8).write(to: storageURL)
         let storage = ExtensionLocalStorage(repository: repository, maximumBytesPerExtension: 1_024)

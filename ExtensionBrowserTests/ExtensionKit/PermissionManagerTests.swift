@@ -18,8 +18,9 @@ final class PermissionManagerTests: XCTestCase {
         await XCTAssertThrowsErrorAsync {
             try await manager.authorize(.storage, extensionID: identifier)
         }
+        let target = try XCTUnwrap(URL(string: "https://example.com"))
         let mayInject = await manager.canInject(
-            into: XCTUnwrap(URL(string: "https://example.com")),
+            into: target,
             tabID: nil,
             extensionID: identifier
         )

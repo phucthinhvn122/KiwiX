@@ -1,3 +1,4 @@
+import UIKit
 import WebKit
 import XCTest
 @testable import ExtensionBrowser
@@ -68,6 +69,56 @@ final class WebExtensionHarnessTests: XCTestCase {
         try await super.tearDown()
     }
 
+    // MARK: - Reporting
+
+    /// Sorted keys so a diff between two runs shows behaviour changes, not key ordering.
+    private static let reportEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return encoder
+    }()
+
+    /// Facts about the run that only the host can state truthfully (DECISIONS §4.2.3).
+    private static func hostEnvironment(for webExtension: WKWebExtension) -> [String: String] {
+        var machine = utsname()
+        uname(&machine)
+        // `String(cString:)` is deprecated in Swift 6; decode the NUL-terminated bytes directly.
+        let identifier = withUnsafeBytes(of: machine.machine) { raw in
+            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+        }
+
+        #if targetEnvironment(simulator)
+        let isSimulator = "true"
+        #else
+        let isSimulator = "false"
+        #endif
+
+        return [
+            "osVersion": UIDevice.current.systemVersion,
+            "deviceModel": UIDevice.current.model,
+            "hardwareIdentifier": identifier,
+            // §4.2.10: a green matrix on the simulator is a smoke test, not a device result.
+            "isSimulator": isSimulator,
+            "extensionVersion": webExtension.version ?? "unknown",
+            "timestamp": ISO8601DateFormatter().string(from: Date())
+        ]
+    }
+
+    /// §4.2.4 wants a stable JSON artifact on disk in addition to the xcresult attachment, so the
+    /// matrix survives even when the test crashes before attachments are flushed.
+    private func writeReportJSON(_ report: WebExtensionProbeReport) throws -> String {
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ).appendingPathComponent("KiwiXHarness", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        let url = support.appendingPathComponent("webextension-api-matrix.json")
+        try Self.reportEncoder.encode(report).write(to: url, options: .atomic)
+        return url.path
+    }
+
     // MARK: - Fixtures
 
     private func fixtureURL(named name: String) throws -> URL {
@@ -123,13 +174,20 @@ final class WebExtensionHarnessTests: XCTestCase {
         }
 
         try await host.loadBackgroundContent(for: context)
-        await fulfillment(of: [reportArrived], timeout: 90)
+        // Stays under the 60s per-test allowance the Makefile passes to xcodebuild; the harness
+        // itself budgets 8s for the content-script ping and 5s for the native handshake.
+        await fulfillment(of: [reportArrived], timeout: 45)
 
-        let report = try XCTUnwrap(received, "No probe report arrived over either transport.")
+        var report = try XCTUnwrap(received, "No probe report arrived over either transport.")
+        // DECISIONS §4.2.3: the host owns the facts JavaScript cannot be trusted to report.
+        report.environment.merge(Self.hostEnvironment(for: webExtension)) { _, host in host }
+
+        let jsonPath = try writeReportJSON(report)
+        print(report.markerLine(jsonPath: jsonPath))
         print(report.consoleTable())
         print("Delegate callbacks observed: \(host.delegateCalls.summary)")
 
-        if let json = try? JSONEncoder().encode(report) {
+        if let json = try? Self.reportEncoder.encode(report) {
             let attachment = XCTAttachment(data: json, uniformTypeIdentifier: "public.json")
             attachment.name = "webextension-api-matrix.json"
             attachment.lifetime = .keepAlways
@@ -141,7 +199,12 @@ final class WebExtensionHarnessTests: XCTestCase {
         add(tableAttachment)
 
         XCTAssertFalse(report.probes.isEmpty, "Harness produced no probes.")
-        XCTAssertGreaterThan(report.passCount, 0, "Nothing passed — the runtime is not usable.")
+        XCTAssertGreaterThan(
+            report.passCount,
+            0,
+            "Nothing passed — the runtime is not usable. Feature detection alone reports "
+                + "\(report.availableCount) available probes, which proves nothing."
+        )
 
         // The tab adapter is the risky part of §5, so its round trip is asserted rather than
         // merely reported.

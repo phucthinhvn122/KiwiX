@@ -46,9 +46,14 @@ enum WebExtensionHostError: LocalizedError, Equatable {
 /// says the API matrix must come from a real run, so nothing here is hard-coded.
 struct WebExtensionProbeReport: Codable, Sendable, Equatable {
     struct Probe: Codable, Sendable, Equatable {
+        /// The five outcomes DECISIONS §4.2 requires. `available` exists because the presence of
+        /// a property is explicitly *not* evidence that an API works (§4.2.5), so a probe that
+        /// only did feature detection must never be reported as a pass.
         enum Status: String, Codable, Sendable {
+            case available
             case pass
             case fail
+            case timeout
             case unsupported
             case skipped
         }
@@ -60,15 +65,30 @@ struct WebExtensionProbeReport: Codable, Sendable, Equatable {
     }
 
     let schema: Int
-    let environment: [String: String]
+    /// The extension fills in what JavaScript can see; the host merges in OS version, device model
+    /// and timestamp, which the extension cannot be trusted to report (§4.2.3).
+    var environment: [String: String]
     let probes: [Probe]
     /// Filled in by the host, not the extension: which transport delivered the report.
     var channel: String?
 
-    var passCount: Int { probes.filter { $0.status == .pass }.count }
-    var failCount: Int { probes.filter { $0.status == .fail }.count }
-    var unsupportedCount: Int { probes.filter { $0.status == .unsupported }.count }
-    var skippedCount: Int { probes.filter { $0.status == .skipped }.count }
+    func count(of status: Probe.Status) -> Int {
+        probes.filter { $0.status == status }.count
+    }
+
+    var passCount: Int { count(of: .pass) }
+    var failCount: Int { count(of: .fail) }
+    var timeoutCount: Int { count(of: .timeout) }
+    var availableCount: Int { count(of: .available) }
+    var unsupportedCount: Int { count(of: .unsupported) }
+    var skippedCount: Int { count(of: .skipped) }
+
+    /// Single grep-able line for CI logs, as required by DECISIONS §4.2.4.
+    static let consoleMarker = "KIWIX_HARNESS_REPORT"
+
+    func markerLine(jsonPath: String) -> String {
+        "\(Self.consoleMarker) channel=\(channel ?? "unknown") total=\(probes.count) pass=\(passCount) fail=\(failCount) timeout=\(timeoutCount) available=\(availableCount) unsupported=\(unsupportedCount) skipped=\(skippedCount) json=\(jsonPath)"
+    }
 
     /// Fixed-width console table. Printed by the harness test so CI logs carry the evidence.
     func consoleTable() -> String {
@@ -89,7 +109,10 @@ struct WebExtensionProbeReport: Codable, Sendable, Equatable {
             lines.append("  \(id)  \(area)  \(status)  \(detail)")
         }
         lines.append("")
-        lines.append("  total \(probes.count)  pass \(passCount)  fail \(failCount)  unsupported \(unsupportedCount)  skipped \(skippedCount)")
+        lines.append(
+            "  total \(probes.count)  pass \(passCount)  fail \(failCount)  timeout \(timeoutCount)"
+                + "  available \(availableCount)  unsupported \(unsupportedCount)  skipped \(skippedCount)"
+        )
         return lines.joined(separator: "\n")
     }
 }

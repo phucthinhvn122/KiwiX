@@ -81,6 +81,7 @@
       ["webNavigation", "network"],
       ["cookies", "network"],
       ["proxy", "network"],
+      ["debugger", "platform"],
       ["dns", "network"],
       ["action", "ui"],
       ["contextMenus", "ui"],
@@ -198,6 +199,21 @@
         : "unsupported",
       "listener registration only, no traffic observed"
     );
+    await H.run("webRequest.blocking.accepted", "network", () => {
+      const noop = () => undefined;
+      try {
+        api.webRequest.onBeforeRequest.addListener(noop, { urls: ["https://blocked.kiwix.test/*"] }, [
+          "blocking"
+        ]);
+      } finally {
+        try {
+          api.webRequest.onBeforeRequest.removeListener(noop);
+        } catch (error) {
+          // Nothing to undo if registration never took.
+        }
+      }
+      return "blocking extraInfoSpec accepted";
+    });
     // DECISIONS 4.2 requires DNR enforcement to be confirmed by observing a blocked or redirected
     // request through a project-controlled URL. The harness page is served by loadSimulatedRequest
     // and has no subresource origin we own, so a "blocked" result would be indistinguishable from
@@ -231,6 +247,28 @@
       const all = await api.alarms.getAll();
       await api.alarms.clear("harnessAlarm");
       return "count=" + all.length;
+    });
+  }
+
+  async function platformProbes() {
+    // DECISIONS 4.1 keeps a `notifications` row, so it needs an answer rather than a shrug. On a
+    // runtime without the namespace this records `unsupported` and costs nothing.
+    await H.run("notifications.create", "ui", async () => {
+      const id = await H.withTimeout(
+        api.notifications.create({
+          type: "basic",
+          title: "KiwiX harness",
+          message: "probe"
+        }),
+        3000,
+        "notifications.create"
+      );
+      try {
+        await api.notifications.clear(id);
+      } catch (error) {
+        // Best effort: the row only needs to know whether create works.
+      }
+      return "id=" + id;
     });
   }
 
@@ -376,7 +414,7 @@
     // whether sendNativeMessage reaches the controller delegate on this OS build.
     let nativeOk = false;
     try {
-      await sendViaNativeMessaging({ schema: 0, environment: {}, probes: [] });
+      await sendViaNativeMessaging({ handshake: true });
       nativeOk = true;
       H.record("runtime.sendNativeMessage", "transport", "pass", "handshake accepted");
     } catch (error) {
@@ -410,6 +448,7 @@
     await permissionProbes();
     await networkProbes();
     await uiProbes();
+    await platformProbes();
     await tabProbes();
     eventDeliveryProbes();
     clearTimeout(watchdog);

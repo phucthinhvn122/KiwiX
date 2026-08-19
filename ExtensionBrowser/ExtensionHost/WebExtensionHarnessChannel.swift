@@ -17,7 +17,6 @@ final class WebExtensionHarnessChannel {
 
     private(set) var isEnabled = false
     private var chunks: [Int: String] = [:]
-    private var expectedChunkCount: Int?
     private(set) var report: WebExtensionProbeReport?
     var onReport: ((WebExtensionProbeReport) -> Void)?
 
@@ -27,16 +26,24 @@ final class WebExtensionHarnessChannel {
 
     func reset() {
         chunks.removeAll()
-        expectedChunkCount = nil
         report = nil
     }
 
     /// - Returns: `true` when the message was a harness report and has been consumed.
     func ingestNativeMessage(_ message: Any) -> Bool {
         guard isEnabled else { return false }
+
+        // The harness handshakes before sending anything, to find out whether native messaging
+        // reaches the delegate at all. It must be acknowledged but never mistaken for the report:
+        // an empty report would latch `deliver` and the real one would be dropped on the floor.
+        if let dictionary = message as? [String: Any], dictionary["handshake"] as? Bool == true {
+            return true
+        }
+
         guard JSONSerialization.isValidJSONObject(message),
               let data = try? JSONSerialization.data(withJSONObject: message),
-              var decoded = try? JSONDecoder().decode(WebExtensionProbeReport.self, from: data) else {
+              var decoded = try? JSONDecoder().decode(WebExtensionProbeReport.self, from: data),
+              !decoded.probes.isEmpty else {
             return false
         }
         decoded.channel = "native"
@@ -59,7 +66,6 @@ final class WebExtensionHarnessChannel {
             return true
         }
 
-        expectedChunkCount = total
         chunks[index] = payload
         guard chunks.count == total else { return true }
 
@@ -70,7 +76,8 @@ final class WebExtensionHarnessChannel {
         }
 
         guard let data = Self.decodeBase64URL(joined),
-              var decoded = try? JSONDecoder().decode(WebExtensionProbeReport.self, from: data) else {
+              var decoded = try? JSONDecoder().decode(WebExtensionProbeReport.self, from: data),
+              !decoded.probes.isEmpty else {
             return true
         }
 

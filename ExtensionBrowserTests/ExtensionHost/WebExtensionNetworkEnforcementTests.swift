@@ -60,6 +60,16 @@ final class NavigationSettledWaiter: NSObject, WKNavigationDelegate {
 ///     built on, and attaches it to a web view built by the shipping factory. If that blocks while
 ///     the extension's rules do not, loopback is exonerated and the defect is specific to the
 ///     `WKWebExtension` path.
+///
+/// Run 32234424615 exonerated timing and loopback; run 32235139341 exonerated the filter form.
+/// The last surviving alternative was scope: if `<all_urls>` does not cover an IP-literal host,
+/// the extension has no authority over the page and "not enforced" is indistinguishable from
+/// "never applied". `content.js` settles that from inside the page itself.
+///
+/// What the assertions at the bottom therefore encode is an experiment, not a wish. Two premises
+/// are asserted -- the extension has scope over the page, and a hand-written rule blocks on that
+/// page -- and the conclusion is asserted as characterization: the extension's own rules do not.
+/// The day any of that changes, this test fails, which is exactly what it is for.
 @MainActor
 final class WebExtensionNetworkEnforcementTests: XCTestCase {
     private var temporaryRoot: URL!
@@ -266,6 +276,23 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
         return server.received(path)
     }
 
+    // MARK: - Scope probe
+
+    /// Whether the extension's content script ran on the page currently loaded in `webView`.
+    ///
+    /// This exists to kill the last alternative explanation for a null blocking result: that
+    /// `<all_urls>` does not cover an IP-literal host, so the extension simply has no authority
+    /// over `http://127.0.0.1:<port>/` and its rules were never in scope to begin with. The
+    /// content script writes into the shared DOM, so the answer is readable without depending on
+    /// runtime messaging — a separate surface, and one whose failure would be indistinguishable
+    /// from "no scope".
+    private func contentScriptRan(in webView: WKWebView) async throws -> Bool {
+        // Stringified so a missing attribute comes back as "null" rather than a bridged nil.
+        let script = "String(document.documentElement.getAttribute('data-kiwix-content-script'))"
+        let value = try await webView.evaluateJavaScript(script)
+        return (value as? String) == "1"
+    }
+
     // MARK: - Positive control
 
     /// Compiles a block rule with `WKContentRuleListStore` — public API, and the same content-rule
@@ -302,7 +329,7 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
 
     // MARK: - Tests
 
-    func testDeclarativeNetRequestSuppressesARealRequest() async throws {
+    func testDeclarativeNetRequestRulesInstallButDoNotSuppressRequests() async throws {
         let probeURL = try fixtureURL(named: "NetworkProbe")
 
         // ---- Phase 1: baseline. No extension loaded, so every subresource must arrive.
@@ -370,6 +397,7 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
         let lateStaticBlocked = !server.received("/late/blocked-static.js")
         let lateDynamicBlocked = !server.received("/late/blocked-dynamic.js")
         let lateBareBlocked = !server.received("/late/blocked-nodot.js")
+        let lateInScope = try await contentScriptRan(in: lateWebView)
 
         // ---- Phase 4: positive control. Our own rule list, WebKit's own enforcement path.
         let controlList = try await compileControlRuleList()
@@ -390,6 +418,7 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
             + "lateBare=\(lateBareBlocked ? "blocked" : "reached") "
             + "controlBare=\(controlBareBlocked ? "blocked" : "reached") "
             + "controlDotted=\(controlDottedBlocked ? "blocked" : "reached") "
+            + "lateInScope=\(lateInScope ? "yes" : "no") "
             + "webRequestObserved=\(observedByWebRequest.count)")
         print("KIWIX_DNR_MATCHED \(matchedSignal.map { "\($0)" } ?? "no signal")")
         print("KIWIX_DNR_PATHS \(server.requestedPaths.joined(separator: " "))")
@@ -414,25 +443,46 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
                 + "measurement below must not be read as a WebKit defect. "
                 + "Observed: \(server.requestedPaths)"
         )
+        XCTAssertTrue(
+            lateInScope,
+            "The probe's content script did not run on the loopback page, so this extension has "
+                + "no demonstrated authority over http://127.0.0.1 and the declarativeNetRequest "
+                + "result below means nothing: \"rule not enforced\" and \"page out of scope\" "
+                + "would look identical. Fix the scope before reading the measurement."
+        )
 
-        // ---- The measurement.
-        XCTAssertTrue(
+        // ---- The measurement, as characterization.
+        //
+        // These assert the behaviour that was measured, not the behaviour that was wanted. On the
+        // iOS 18.5 Simulator (CI runs 32233216520 / 32234424615 / 32235139341) every
+        // declarativeNetRequest rule this fixture installs was accepted, reported enabled by
+        // getEnabledRulesets() / getDynamicRules() / WKWebExtensionContext
+        // .hasContentModificationRules, matched by nothing according to getMatchedRules(), and
+        // enforced against nothing - while the control above blocked the same URL, on the same
+        // server, in the same web view configuration, in both filter forms.
+        //
+        // If one of these three starts failing, the platform changed and that is good news. Do not
+        // relax the assertion: re-run the measurement and update COMPATIBILITY.md and R-21.
+        XCTAssertFalse(
             lateStaticBlocked,
-            "A static declarativeNetRequest block rule did not stop the request \(Int(Self.compilationGrace))s "
-                + "after the extension reported its ruleset enabled, while a hand-compiled rule list "
-                + "on the same server did block. Observed: \(server.requestedPaths)"
+            "A static declarativeNetRequest rule now blocks, which it did not when this was "
+                + "measured. Re-measure and update COMPATIBILITY.md / RISKS.md R-21 - uBlock "
+                + "Origin Lite may have become viable."
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             lateBareBlocked,
-            "A static declarativeNetRequest rule whose urlFilter is form-identical to the control "
-                + "that did block (\"blocked-nodot\", no dot) still did not stop the request. "
-                + "Observed: \(server.requestedPaths)"
+            "A static declarativeNetRequest rule with a dot-free urlFilter now blocks. Re-measure "
+                + "and update COMPATIBILITY.md / RISKS.md R-21."
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             lateDynamicBlocked,
-            "A dynamic declarativeNetRequest block rule did not stop the request \(Int(Self.compilationGrace))s "
-                + "after getDynamicRules() reported it installed, while a hand-compiled rule list "
-                + "on the same server did block. Observed: \(server.requestedPaths)"
+            "A dynamic declarativeNetRequest rule now blocks. Re-measure and update "
+                + "COMPATIBILITY.md / RISKS.md R-21."
+        )
+        XCTAssertEqual(
+            observedByWebRequest.count, 0,
+            "webRequest.onBeforeRequest now fires. It accepted a listener and delivered nothing "
+                + "when this was measured. Re-measure and update COMPATIBILITY.md / RISKS.md R-21."
         )
     }
 }

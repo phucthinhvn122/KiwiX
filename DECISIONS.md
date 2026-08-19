@@ -266,8 +266,13 @@ Chỉ chuyển sang M0 khi tất cả điều kiện sau đúng:
 
 - [x] Chủ dự án phê duyệt Path A và min iOS 18.4.
 - [x] Chọn Apple Developer Program làm kênh chính; AltStore/SideStore là fallback.
-- [x] macOS/Xcode qua GitHub Actions tại repository private của dự án.
-- [ ] Harness chạy xanh trên simulator iOS 18.4+ và report được lưu làm artifact.
+- [x] macOS/Xcode qua GitHub Actions. Repository chuyển public 2026-08-19 để dùng standard runner
+      miễn phí không giới hạn; secrets ký chỉ dùng ở `build-device.yml` (`workflow_dispatch`), `ci.yml`
+      dùng `pull_request` nên PR từ fork không nhận secrets.
+- [x] Harness chạy xanh trên simulator iOS 18.4+ và report được lưu làm artifact. Đạt ở M2:
+      simulator 18.5 (thoả "18.4+"), `webextension-api-matrix.json`/`.txt` đính vào
+      `build/Tests.xcresult` và upload ở `ci.yml:109`. **Không** khép R-19: sàn khai báo 18.4 tự nó
+      vẫn chưa chạy lần nào vì runner không có runtime đó.
 - [x] Thiết bị nghiệm thu: iPhone XS, iOS 18.7.9.
 - [x] `RISKS.md` được chấp nhận làm risk register ban đầu; cập nhật theo milestone.
 

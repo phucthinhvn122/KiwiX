@@ -437,9 +437,9 @@
   async function main() {
     // Any single hang must not cost the entire matrix; whatever has been recorded still ships.
     const watchdog = setTimeout(() => {
-      H.record("harness.watchdog", "core", "timeout", "probe run exceeded 30s");
+      H.record("harness.watchdog", "core", "timeout", "probe run exceeded 20s");
       sendViaBeacon(H.report()).catch(() => {});
-    }, 30000);
+    }, 20000);
 
     installListeners();
     namespaceProbes();

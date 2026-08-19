@@ -19,6 +19,7 @@ enum WebExtensionHostError: LocalizedError, Equatable {
     case optionsPageUnsupported
     case additionalWindowsUnsupported
     case nativeMessagingUnavailable
+    case backgroundContentTimedOut(TimeInterval)
     case messagePortUnsupported
     case tabCreationFailed(String)
 
@@ -32,6 +33,8 @@ enum WebExtensionHostError: LocalizedError, Equatable {
             return "This browser uses a single window."
         case .nativeMessagingUnavailable:
             return "No native application is registered for this message."
+        case .backgroundContentTimedOut(let seconds):
+            return "Background content did not start within \(Int(seconds))s."
         case .messagePortUnsupported:
             return "Native message ports are not available in this build yet."
         case .tabCreationFailed(let reason):
@@ -114,5 +117,20 @@ struct WebExtensionProbeReport: Codable, Sendable, Equatable {
                 + "  available \(availableCount)  unsupported \(unsupportedCount)  skipped \(skippedCount)"
         )
         return lines.joined(separator: "\n")
+    }
+}
+
+/// One-shot gate so a continuation raced between a completion handler and a timeout is resumed
+/// exactly once. Resuming twice is a hard crash, not a warning.
+final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if claimed { return false }
+        claimed = true
+        return true
     }
 }

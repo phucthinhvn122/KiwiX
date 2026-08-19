@@ -11,12 +11,27 @@ public struct ManifestParser: Sendable {
                 "maximum size is \(Self.maximumManifestBytes) bytes"
             )
         }
-        try BoundedJSONPreflight.validate(
-            data,
-            maximumDepth: 32,
-            maximumStringBytes: 64 * 1_024,
-            maximumStructuralTokens: 50_000
-        )
+        do {
+            try BoundedJSONPreflight.validate(
+                data,
+                maximumDepth: 32,
+                maximumStringBytes: 64 * 1_024,
+                maximumStructuralTokens: 50_000
+            )
+        } catch let error as BoundedJSONPreflightError {
+            // `BoundedJSONPreflightError` is internal; a public parser must not leak it. Callers
+            // contract on `ExtensionManifestError` and were seeing an untranslated preflight error.
+            switch error {
+            case .nestingLimit:
+                throw ExtensionManifestError.manifestLimitExceeded("maximum JSON nesting depth is 32")
+            case .stringLimit:
+                throw ExtensionManifestError.manifestLimitExceeded("a JSON string exceeds 64 KiB")
+            case .structuralLimit:
+                throw ExtensionManifestError.manifestLimitExceeded("too many JSON structural tokens")
+            case .malformedStructure:
+                throw ExtensionManifestError.invalidJSON("malformed JSON structure")
+            }
+        }
         try Self.validateJSONStructure(data)
         let manifest: WebExtensionManifest
         do {

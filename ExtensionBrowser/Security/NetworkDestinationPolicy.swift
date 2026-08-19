@@ -72,11 +72,17 @@ enum NetworkDestinationPolicy {
         }
 
         let host = canonicalHostname(rawHost)
-        guard !host.isEmpty, !isProhibitedHostname(host) else {
+        guard !host.isEmpty else {
             throw NetworkDestinationPolicyError.prohibitedHost
         }
-        if isIPAddress(host), !isPublicIPAddress(host) {
-            throw NetworkDestinationPolicyError.prohibitedAddress
+        // An IP literal is an address, not a hostname. `isProhibitedHostname` also rejects
+        // non-public literals, so testing it first shadowed the address branch entirely.
+        if isIPAddress(host) {
+            guard isPublicIPAddress(host) else {
+                throw NetworkDestinationPolicyError.prohibitedAddress
+            }
+        } else if isProhibitedHostname(host) {
+            throw NetworkDestinationPolicyError.prohibitedHost
         }
 
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else {

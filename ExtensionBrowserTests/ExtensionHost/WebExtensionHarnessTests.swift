@@ -173,10 +173,11 @@ final class WebExtensionHarnessTests: XCTestCase {
             print("WKWebExtensionContext.unsupportedAPIs: \(unsupported.sorted().joined(separator: ", "))")
         }
 
-        try await host.loadBackgroundContent(for: context)
-        // Stays under the 60s per-test allowance the Makefile passes to xcodebuild; the harness
-        // itself budgets 8s for the content-script ping and 5s for the native handshake.
-        await fulfillment(of: [reportArrived], timeout: 45)
+        try await host.loadBackgroundContent(for: context, timeout: 15)
+        // 15s + 30s stays under the 60s per-test allowance the Makefile passes to xcodebuild.
+        // Inside that the harness budgets 8s for the content-script ping, 5s for the native
+        // handshake, and self-destructs at 20s so a hung probe still ships a partial matrix.
+        await fulfillment(of: [reportArrived], timeout: 30)
 
         var report = try XCTUnwrap(received, "No probe report arrived over either transport.")
         // DECISIONS §4.2.3: the host owns the facts JavaScript cannot be trusted to report.
@@ -231,11 +232,20 @@ final class WebExtensionHarnessTests: XCTestCase {
             print("service_worker: WKWebExtension accepted the manifest.")
             print("service_worker: hasBackgroundContent=\(context.webExtension.hasBackgroundContent)")
             print("service_worker: errors=\(context.webExtension.errors.map(\.localizedDescription))")
+            // A manifest the runtime cannot start never calls the completion handler, so the
+            // previous version of this test hung until xcodebuild killed it at 60s. The timeout
+            // turns "never starts" into a reportable result.
             do {
-                try await host.loadBackgroundContent(for: context)
+                try await host.loadBackgroundContent(for: context, timeout: 15)
                 print("service_worker: background content started.")
+            } catch let error as WebExtensionHostError {
+                if case .backgroundContentTimedOut = error {
+                    print("service_worker: background content never started (no callback in 15s).")
+                } else {
+                    print("service_worker: background content failed — \(error.localizedDescription)")
+                }
             } catch {
-                print("service_worker: background content failed to start — \(error.localizedDescription)")
+                print("service_worker: background content failed — \(error.localizedDescription)")
             }
         } catch {
             print("service_worker: WKWebExtension rejected the manifest — \(error.localizedDescription)")

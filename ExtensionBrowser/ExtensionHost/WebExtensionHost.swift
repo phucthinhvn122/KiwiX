@@ -96,9 +96,24 @@ final class WebExtensionHost: NSObject {
         policies.removeAll()
     }
 
-    func loadBackgroundContent(for context: WKWebExtensionContext) async throws {
+    /// - Parameter timeout: seconds to wait before giving up. Required in tests: a manifest the
+    ///   runtime cannot start (an MV3 `service_worker`, for one) never calls the completion handler
+    ///   at all, so without a deadline the caller hangs instead of learning that fact.
+    func loadBackgroundContent(
+        for context: WKWebExtensionContext,
+        timeout: TimeInterval? = nil
+    ) async throws {
+        let resumeOnce = ResumeOnce()
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            if let timeout {
+                Task {
+                    try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    guard resumeOnce.claim() else { return }
+                    continuation.resume(throwing: WebExtensionHostError.backgroundContentTimedOut(timeout))
+                }
+            }
             context.loadBackgroundContent { error in
+                guard resumeOnce.claim() else { return }
                 if let error {
                     continuation.resume(throwing: error)
                 } else {

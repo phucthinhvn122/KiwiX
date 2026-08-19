@@ -83,16 +83,82 @@ Hai trường hợp namespace có mặt nhưng method thì không:
 `permissions`, `alarms`, `i18n`, và `webRequest.onBeforeRequest.register`.
 
 `webRequest.onBeforeRequest.register` cố ý dừng ở `available`: đăng ký listener thành công **không**
-chứng minh có traffic đi qua nó. Chỉ probe nào quan sát được request thật mới được `pass`.
+chứng minh có traffic đi qua nó. Chỉ probe nào quan sát được request thật mới được `pass`. M3 đã đi
+tìm traffic đó bằng một server thật, và không thấy: listener nhận đăng ký rồi **không nổ lần nào**.
 
 ### Chưa đo, có lý do (skipped) — 4
 
 | Probe | Lý do |
 |---|---|
-| `declarativeNetRequest.enforcement` | Trang harness do `loadSimulatedRequest` phục vụ, không có subresource origin nào dự án kiểm soát. Host `.test` sẽ fail DNS, nên kết quả "bị block" không phân biệt được với "không phân giải được tên". Cần test server nội bộ → M3. |
+| `declarativeNetRequest.enforcement` | Harness không tự đo được: trang do `loadSimulatedRequest` phục vụ, không có subresource origin nào dự án kiểm soát. **Đã đo riêng ở M3 bằng test server nội bộ — xem mục dưới. Kết quả: không chặn.** |
 | `tabs.onMoved.fired` | Chưa thực hiện reorder tab |
 | `windows.onFocusChanged.fired` | Chỉ có một window (ADR-004) |
 | `tabs.create.beacon` | Transport dự phòng không dùng tới vì native messaging đã thắng |
+
+## `declarativeNetRequest` nhận rule nhưng không thi hành
+
+Đây là kết quả nặng nhất trong toàn bộ tài liệu này, nên nó được đo riêng chứ không nằm trong harness.
+
+**Nguồn:** CI run `32236350621` — `ExtensionBrowserTests/ExtensionHost/WebExtensionNetworkEnforcementTests.swift`
+chạy một HTTP server thật trên `127.0.0.1` (`ExtensionBrowserTests/Support/LocalHTTPServer.swift`) và
+ghi lại **mọi path được yêu cầu**. Extension đo là `Tests/Fixtures/WebExtensions/NetworkProbe/`.
+
+Lý do phải có server riêng: trên trang harness, một request bị chặn và một tên miền không phân giải
+được **im lặng giống hệt nhau**. `127.0.0.1` không cần DNS, nên im lặng chỉ còn một cách giải thích.
+
+### Kết quả
+
+| Rule do ai cấp | urlFilter không có dấu chấm | urlFilter có dấu chấm |
+|---|---|---|
+| **Tự biên dịch** qua `WKContentRuleListStore` | `blocked` | `blocked` |
+| **`declarativeNetRequest` static** của extension | `reached` | `reached` |
+| **`declarativeNetRequest` dynamic** của extension | — | `reached` |
+
+Cùng một server, cùng một URL, cùng một `WKWebViewConfiguration` dựng từ factory của app. Khác biệt
+duy nhất còn lại giữa cột chặn được và cột không chặn được là **ai cấp rule**.
+
+Trong khi đó runtime báo mọi thứ đều ổn:
+
+- `getEnabledRulesets()` → `["network-probe-static"]`
+- `getDynamicRules()` → 1 rule đã cài
+- `WKWebExtensionContext.hasContentModificationRules` → `true`
+- `hasAccessToAllHosts` → `true`
+- `getMatchedRules({})` → **rỗng, sau 8 lần poll trong ~5,6 giây**
+
+Dòng cuối là dòng quan trọng nhất: đây **không** phải "khớp rồi nhưng không chặn", mà là **engine
+không hề đối sánh**. Rule được nhận, được liệt kê, và không tham gia vào bất kỳ request nào.
+
+`webRequest.onBeforeRequest` đăng ký thành công cho `<all_urls>` và **nổ 0 lần** trong suốt 21 request
+đi qua server.
+
+### Những cách giải thích khác đã bị loại
+
+Một kết quả âm chỉ đáng tin khi đã giết hết cách giải thích thay thế. Bốn cái, theo thứ tự bị loại:
+
+| Nghi ngờ | Cách loại | Run |
+|---|---|---|
+| DNS fail chứ không phải bị chặn | Server trên `127.0.0.1`, không cần DNS; pha `baseline` không có extension chứng minh cả 6 subresource đều tới nơi | `32233216520` |
+| Rule chưa kịp biên dịch | Lặp lại y hệt navigation sau 8 giây; `WKContentRuleList` compile là bất đồng bộ nên 392 ms có thể là quá sớm | `32234424615` |
+| WebKit không áp content blocking lên loopback | Positive control: tự biên dịch `WKContentRuleList` bằng `WKContentRuleListStore` rồi gắn vào web view của factory → **chặn được** | `32234424615` |
+| Dạng filter (control không có dấu chấm, DNR có) | Ma trận 2×2 {có chấm, không chấm} × {rule của mình, rule của extension} → cả hai dạng của mình đều chặn, cả hai dạng của DNR đều không | `32235139341` |
+| Extension không có thẩm quyền trên host dạng IP | Content script `matches: ["<all_urls>"]` chạy được trên chính trang loopback đó (đánh dấu vào DOM, Swift đọc lại) | `32236350621` |
+
+Quyền không phải nguyên nhân: `WebExtensionHost.apply(policy:to:for:)` cấp `grantedExplicitly` cho
+toàn bộ `requestedPermissions` và `requestedPermissionMatchPatterns`, trong đó có `declarativeNetRequest`
+và `<all_urls>`.
+
+### Hệ quả
+
+**uBlock Origin Lite — thước đo v1 của spec §3 — không thể hoạt động trên nền này.** uBOL là MV3
+thuần, chặn hoàn toàn bằng `declarativeNetRequest`. Không có DNR thi hành thì nó cài được, báo cáo
+đúng, và không chặn gì cả. Ghi ở `RISKS.md` R-21.
+
+### Phạm vi của kết luận
+
+**Simulator iOS 18.5, không phải thiết bị, không phải đúng sàn 18.4 đã khai báo** (R-19). Cần đo lại
+trên thiết bị thật trước khi coi đây là giới hạn vĩnh viễn của nền tảng. Test giữ kết quả này dưới
+dạng *characterization*: hôm nào Apple sửa, test đỏ ngay, và tài liệu này phải được đo lại chứ không
+được nới assertion.
 
 ## `runtime.id` không ổn định giữa các lần cài
 

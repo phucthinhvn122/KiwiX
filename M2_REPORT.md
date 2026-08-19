@@ -158,6 +158,8 @@ Bốn kết quả đáng chú ý hơn con số tổng:
 3. **`webRequest` blocking chấp nhận `extraInfoSpec` nhưng không chứng minh thêm được gì.** Ghi
    `available`, không phải `pass`. Tương tự, `declarativeNetRequest` nạp được static ruleset và dynamic
    rules nhưng **chặn thật chưa đo** — cần test server nội bộ, đẩy sang M3.
+   *Cập nhật sau M3 (run `32236350621`): đã đo. Không chặn gì cả, và `webRequest` không nổ lần nào —
+   xem `COMPATIBILITY.md` và R-21. Đoạn trên giữ nguyên vì đây là báo cáo trạng thái M2.*
 4. **Không có dòng `fail` nào.** Lần chạy trước có 1 fail ở `webNavigation.getAllFrames`, truy ra là
    probe của chính harness truyền `tabId: -1` (`TAB_ID_NONE`) và bị runtime từ chối đúng. Sửa xong thì
    pass. Nói ra vì báo cáo một lỗi của mình như giới hạn của WebKit thì tệ hơn là không đo.

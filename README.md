@@ -239,9 +239,10 @@ Do máy Windows không có Xcode/WebKit SDK iOS, không dùng kết quả parse 
 ## Giới hạn hiện tại
 
 - iOS yêu cầu browser dùng WebKit; dự án không nhúng Chromium và không thể đạt parity Chrome/Kiwi đầy đủ.
-- Không có background service worker, declarativeNetRequest, webRequest, native messaging, binary module, Chrome Web Store auto-install hoặc sync.
+- Không có background service worker (nạp không lỗi nhưng không chạy), binary module, Chrome Web Store auto-install hoặc sync.
+- `declarativeNetRequest` và `webRequest` **có mặt nhưng không thi hành**: rule cài được, runtime báo enabled, và không request nào bị chặn hay bị quan sát. Đo bằng server nội bộ trên loopback, không phải suy đoán — `COMPATIBILITY.md` và `RISKS.md` R-21. Hệ quả: uBlock Origin Lite chưa chạy được.
 - Không hỗ trợ Manifest V2; extension update/rollback, service worker và long-lived ports chưa có.
-- Permission UI có grant/revoke theo domain; runtime prompt ngoài one-time `activeTab` gesture chưa mô phỏng toàn bộ browser Chrome/Safari.
+- **Không có permission UI, và không có đường cài extension nào cho người dùng.** Chỉ harness bundled của app được tin (`.trustFirstPartyBundle`); mọi thứ khác `.denyAll`. Sheet xác nhận quyền theo §7 là việc của M4 (R-04, R-05).
 - Tab suspension khôi phục URL/snapshot, không serialize toàn bộ JavaScript heap, form state hay back-forward list của trang.
 - History chỉ ghi navigation HTTP(S) của tab thường. Downloads ghi vào hidden partial rồi mới atomic-rename khi hoàn tất, enforce byte/disk/concurrency policy và reconcile partial/orphan files; private metadata không persist nhưng file user chọn tải vẫn tồn tại với warning. Favicon được discover, fetch bằng public-destination policy, validate/decode và cache có quota (private mode không ghi disk cache).
 - Simulator build không chạy trực tiếp trên Windows; signed device build không thể tồn tại nếu thiếu Apple signing assets hợp lệ.

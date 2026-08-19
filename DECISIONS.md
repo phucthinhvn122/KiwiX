@@ -88,7 +88,7 @@ phụ thuộc hoàn toàn vào WebKit, chưa đo:
 | Rate limit tạo tab | `ExtensionTabCreationLimiter` | **Không phải WebKit quản** — `tabs.create`/`duplicate` quay lại app qua delegate. Đã dựng lại: `WebExtensionTabRateLimiter`, 10 tab/60s mỗi extension |
 | Chặn scheme URL extension mở | `ExtensionAPIRegistry.isAllowedTabURL` | Đã dựng lại: `WebExtensionTabPolicy.isAllowedNavigationURL` (http/https/`about:blank`, không credential, ≤8 KiB) |
 | Tên extension không spoof được bằng ký tự bidi | `ManifestParser` | **Chưa có**. Hiện không chỗ nào render tên extension nên chưa với tới được. M4 phải cho `WKWebExtension.displayName` đi qua `SafeInput.displayText` — WebKit không sanitize |
-| activeTab hết hiệu lực khi điều hướng | `ExtensionPermissionManager` | Vacuous: `shouldGrantPermissionsOnUserGesture` trả `false`, không cấp activeTab. M3 thay bằng `userGesturePerformed(in:)` |
+| activeTab hết hiệu lực khi điều hướng | `ExtensionPermissionManager` | Vacuous: `shouldGrantPermissionsOnUserGesture` trả `false`, không cấp activeTab. **M4** thay bằng `userGesturePerformed(in:)` (khớp với R-06; M3 đã dùng để đo thi hành mạng) |
 | Match pattern đúng theo spec | `WebExtensionMatchPattern` + 7 test | `WKWebExtension.MatchPattern`, chưa đo |
 | Popup deny-all network | `ExtensionPopupNetworkIsolation` | Chưa có popup; M4 |
 | UI xác nhận permission trước install (§7) | `ExtensionManagerView` | **Không còn**. M4 phải dựng lại trước khi có bất kỳ đường cài extension nào cho người dùng |
@@ -145,11 +145,11 @@ Bảng probe đầy đủ 90 dòng nằm ở `COMPATIBILITY.md`.
 | `storage.sync` | PASS (API) | CHƯA CHẠY | API chạy, **ngữ nghĩa đồng bộ chưa chứng minh** — cần thiết bị thật |
 | `tabs` | PASS | CHƯA CHẠY | create/query/get/activate/remove xuyên adapter thật; 4 event thật sự nổ |
 | `scripting` | PASS | CHƯA CHẠY | `executeScript` + `insertCSS` vào tab thật |
-| `action` / popup / badge | MỘT PHẦN | CHƯA CHẠY | `setBadgeText`/`setTitle` pass, delegate `didUpdateAction` nổ. **Popup chưa đo** — `presentActionPopup` hiện app tự từ chối, là phạm vi M3 |
+| `action` / popup / badge | MỘT PHẦN | CHƯA CHẠY | `setBadgeText`/`setTitle` pass, delegate `didUpdateAction` nổ. **Popup chưa đo** — `presentActionPopup` hiện app tự từ chối, là phạm vi **M4** (cần `WKWebExtensionContext.webViewConfiguration`) |
 | `i18n` | MỘT PHẦN | CHƯA CHẠY | Mới đo `getUILanguage` = `en-US` |
-| `declarativeNetRequest` | MỘT PHẦN | CHƯA CHẠY | Static ruleset nạp được, dynamic rules thêm/đọc được. `getAvailableStaticRuleCount` không tồn tại. **Chặn thật chưa đo** (cần test server, M3) |
-| `webRequest` quan sát | AVAILABLE | CHƯA CHẠY | Đăng ký listener được, **chưa chứng minh có traffic đi qua**. Không tính là pass |
-| `webRequest` blocking | AVAILABLE | CHƯA CHẠY | `extraInfoSpec: ["blocking"]` được chấp nhận lúc đăng ký. Chấp nhận ≠ chặn được; `filterResponseData` không tồn tại |
+| `declarativeNetRequest` | **KHÔNG THI HÀNH** | CHƯA CHẠY | Static ruleset nạp được, dynamic rules thêm/đọc được, `getEnabledRulesets`/`hasContentModificationRules` đều báo có. **Đo bằng server nội bộ (M3, run `32236350621`): không chặn request nào, cả static lẫn dynamic, cả hai dạng filter; `getMatchedRules` trả về rỗng.** Cùng URL đó, `WKContentRuleList` tự biên dịch thì chặn được. `getAvailableStaticRuleCount` không tồn tại. Chi tiết + các confound đã loại: `COMPATIBILITY.md` |
+| `webRequest` quan sát | **KHÔNG NỔ** | CHƯA CHẠY | Đăng ký listener cho `<all_urls>` được. **Đo với traffic thật (M3): 0 event trên 21 request.** Không tính là pass |
+| `webRequest` blocking | AVAILABLE | CHƯA CHẠY | `extraInfoSpec: ["blocking"]` được chấp nhận lúc đăng ký. Chấp nhận ≠ chặn được, và listener không nổ thì không có gì để chặn; `filterResponseData` không tồn tại |
 | `notifications` | KHÔNG CÓ | — | Namespace vắng mặt, `notifications.create` là `undefined` |
 | `nativeMessaging` | PASS | CHƯA CHẠY | `sendNativeMessage` tới được `WKWebExtensionControllerDelegate` — đây là transport của chính harness |
 | `debugger`, `proxy`, `devtools_*` | KHÔNG CÓ | — | Cả ba đều vắng mặt |

@@ -188,8 +188,8 @@
       return "count=" + cookies.length;
     });
     // Registration succeeding is not observation. Nothing here drives a request past the
-    // listener, so this can only ever be "available" (DECISIONS 4.2.5); real observation is a
-    // separate probe once a controlled test server exists.
+    // listener, so this can only ever be "available" (DECISIONS 4.2.5). The observation was made
+    // elsewhere, with a real server: 0 events across 21 requests. Do not upgrade this to a pass.
     H.record(
       "webRequest.onBeforeRequest.register",
       "network",
@@ -197,7 +197,7 @@
         "function"
         ? "available"
         : "unsupported",
-      "listener registration only, no traffic observed"
+      "registration only. Measured against real traffic in WebExtensionNetworkEnforcementTests: fired 0 times (COMPATIBILITY.md, R-21)"
     );
     await H.run("webRequest.blocking.accepted", "network", () => {
       const noop = () => undefined;
@@ -214,14 +214,13 @@
       }
       return "blocking extraInfoSpec accepted";
     });
-    // DECISIONS 4.2 requires DNR enforcement to be confirmed by observing a blocked or redirected
-    // request through a project-controlled URL. The harness page is served by loadSimulatedRequest
-    // and has no subresource origin we own, so a "blocked" result would be indistinguishable from
-    // a DNS failure. Deliberately not faked - see M2_REPORT.md.
+    // Still skipped, and still for the original reason: the harness page is served by
+    // loadSimulatedRequest and has no subresource origin we own, so "blocked" here would be
+    // indistinguishable from a DNS failure. The answer came from a test that does own one.
     H.skip(
       "declarativeNetRequest.enforcement",
       "network",
-      "needs a controlled test server to observe a blocked request (M3)"
+      "not observable from this harness. Measured in WebExtensionNetworkEnforcementTests against a loopback server: rules install, nothing is blocked (COMPATIBILITY.md, R-21)"
     );
   }
 

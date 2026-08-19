@@ -142,6 +142,14 @@ every CI run; `COMPATIBILITY.md` carries the current matrix and `M2_REPORT.md` t
 Latest: 42 pass, 0 fail, 18 available-but-unexercised, 26 unsupported, 4 skipped, on iOS 18.5 simulator.
 Simulator results are a smoke test, not device evidence.
 
+One answer did not come from the harness, because the harness cannot serve itself a request it owns.
+`WebExtensionNetworkEnforcementTests` runs a real HTTP server on loopback and measures whether a
+`declarativeNetRequest` rule stops anything. It does not: the rules install, `getEnabledRulesets()` and
+`hasContentModificationRules` both report them, `getMatchedRules()` returns empty, and every request
+arrives — while a `WKContentRuleList` compiled by the same test blocks the same URL on the same server.
+`webRequest` listeners register and never fire. `M3_REPORT.md` has the method and the eliminated
+confounds; R-21 has the consequence, which is that the spec's v1 yardstick extension cannot function.
+
 ## Downloads and persistence
 
 Downloads are capped at 500 MiB, warn at 50 MiB, reserve 250 MiB free space, and allow three concurrent

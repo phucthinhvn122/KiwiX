@@ -119,15 +119,30 @@ var uniqueIdentifier: String { get set }
 Nghĩa là app **phải chủ động gán** identifier ổn định của mình trước khi `controller.load(context)`.
 Hệ quả cho M4/M5:
 
-- app tự sinh identity bền cho mỗi extension (hash nội dung package — `ExtensionKit/Installer/ExtensionIdentity.swift`
+- app tự sinh identity bền cho mỗi extension (hash nội dung package — `ExtensionHost/Install/ExtensionIdentity.swift`
   đã làm việc này) rồi gán vào `context.uniqueIdentifier` **trước khi load**;
 - nếu không gán, mọi thứ khoá theo `runtime.id` sẽ mất sau mỗi lần cài lại — kể cả storage của chính
   extension;
 - gán sau khi context đã load là không có tác dụng, nên thứ tự trong installer là bắt buộc, không phải
   tuỳ chọn.
 
-Chưa verify bằng thực nghiệm: bản thân việc gán có thật sự làm `browser.runtime.id` đổi theo hay không.
-Đây là chữ ký lấy từ tài liệu Apple, chưa phải số đo của harness. Cần một probe riêng ở M4.
+**Đã verify bằng thực nghiệm** (CI run 32226404376). `WebExtensionHost.loadExtension` gán
+`uniqueIdentifier = "kiwix.harness.pinned-identity"` trước `controller.load(context)` — cố tình không
+phải UUID, để nếu runtime bỏ qua phép gán và rơi về giá trị mặc định thì probe vẫn hiện ra một chuỗi
+trông hợp lý và test sẽ pass sai. Kết quả:
+
+```
+runtime.id                    core            PASS         kiwix.harness.pinned-identity
+```
+
+Cộng với assert phía host trên `context.uniqueIdentifier`. Trong cùng log, WebKit cũng khoá storage nội
+bộ của nó theo giá trị này (`[Extensions] Failed to release storage savepoint for extension
+kiwix.harness.pinned-identity`), tức identifier không chỉ đi ra JavaScript mà còn là khoá partition
+storage — đúng điều cần cho R-20.
+
+Hai chi tiết còn mở: (1) log trên là một lỗi savepoint thật của WebKit lúc teardown controller
+non-persistent, chưa rõ có ảnh hưởng gì ngoài test, chưa đo; (2) chưa có đường cài production nào dùng
+tới, nên tính đúng đắn của thứ tự gán trong installer vẫn là việc của M4.
 
 Lưu ý phạm vi của phép đo: hai lần chạy trên là hai container simulator sạch khác nhau, nên nó chứng
 minh **id mặc định không bền qua cài mới**. Chưa chứng minh id đổi khi app khởi động lại với cùng

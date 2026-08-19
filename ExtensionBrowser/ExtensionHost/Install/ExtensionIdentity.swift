@@ -80,7 +80,7 @@ public enum ExtensionIdentityGenerator {
                     hasher.update(data: chunk)
                 }
                 guard actualFileBytes == file.size else {
-                    throw ExtensionRuntimeError.integrityCheckFailed("extension resource changed during verification")
+                    throw ExtensionInstallError.checksumMismatch(file.path)
                 }
             }
         }

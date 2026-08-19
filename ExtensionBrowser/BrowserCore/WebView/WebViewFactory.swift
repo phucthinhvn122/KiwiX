@@ -7,17 +7,12 @@ final class WebViewConfigurationProvider {
     private var privateProcessPool = WKProcessPool()
     private let normalDataStore = WKWebsiteDataStore.default()
     private var privateDataStore = WKWebsiteDataStore.nonPersistent()
-    private let extensionBridge: BrowserExtensionBridge
 
     /// Assigned after construction: the host needs a `TabManager`, which needs the factory that
     /// owns this provider, so the cycle has to be closed by the scene rather than by an init.
     weak var webExtensionHost: WebExtensionHost?
 
-    init(extensionBridge: BrowserExtensionBridge? = nil) {
-        self.extensionBridge = extensionBridge ?? .shared
-    }
-
-    func configuration(tabID: UUID, isPrivate: Bool) -> WKWebViewConfiguration {
+    func configuration(isPrivate: Bool) -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
         configuration.processPool = isPrivate ? privateProcessPool : normalProcessPool
         configuration.websiteDataStore = isPrivate ? privateDataStore : normalDataStore
@@ -34,11 +29,6 @@ final class WebViewConfigurationProvider {
             // normal tabs only. `WKWebViewConfiguration` is copied when the web view is created,
             // which is why this cannot be set later.
             configuration.webExtensionController = webExtensionHost?.controller
-
-            extensionBridge.integration?.configure(
-                userContentController: contentController,
-                context: BrowserExtensionTabContext(tabID: tabID, isPrivate: false)
-            )
         }
 
         return configuration
@@ -58,10 +48,10 @@ final class WebViewFactory {
         self.configurationProvider = configurationProvider ?? WebViewConfigurationProvider()
     }
 
-    func makeWebView(tabID: UUID, isPrivate: Bool) -> WKWebView {
+    func makeWebView(isPrivate: Bool) -> WKWebView {
         let webView = WKWebView(
             frame: .zero,
-            configuration: configurationProvider.configuration(tabID: tabID, isPrivate: isPrivate)
+            configuration: configurationProvider.configuration(isPrivate: isPrivate)
         )
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.allowsBackForwardNavigationGestures = true

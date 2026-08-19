@@ -1,8 +1,9 @@
 # KiwiX architecture and security contract
 
 This document describes the implementation currently in this repository. `project.yml` and the Swift
-source remain authoritative. `DECISIONS.md` records a possible future migration to Apple's
-`WKWebExtension`; KiwiX does **not** currently claim that migration or Chrome compatibility is complete.
+source remain authoritative. The extension runtime is Apple's `WKWebExtension` (ADR-001 in
+`DECISIONS.md`); the app-owned runtime that preceded it has been removed. KiwiX does **not** claim
+Chrome compatibility — what the runtime supports is measured by the API harness, not asserted here.
 
 ## Runtime shape
 
@@ -10,30 +11,28 @@ source remain authoritative. `DECISIONS.md` records a possible future migration 
 Address/search input -> URLInputParser -> TabManager -> WKWebView
                                       -> History / tabs / snapshots / downloads
 
-ZIP or folder -> bounded extractor -> manifest validator -> package identity
-              -> install confirmation -> ExtensionRepository
-              -> explicit grants -> content scripts / popup / native bridge
+Extension directory -> WKWebExtension(resourceBaseURL:) -> WKWebExtensionContext
+                    -> WKWebExtensionController -> WebExtensionHost -> tab/window adapters
 ```
 
-- `BrowserCore` owns navigation policy, the active web view, trusted browser chrome, dialogs, favicon
-  discovery/fetching, and the browser/extension boundary.
+- `BrowserCore` owns navigation policy, the active web view, trusted browser chrome, dialogs, and
+  favicon discovery/fetching. `WebViewConfigurationProvider` is where the extension controller is
+  attached to a configuration, or deliberately not attached.
 - `Tabs` owns logical tab identity, the 50-tab global cap, normal-session restoration, snapshots, and
   ACTIVE/WARM/SUSPENDED lifecycle planning.
-- `ExtensionKit` owns package validation, installed-tree integrity, declared/granted permissions,
-  content-script preparation, IPC routing, API quotas, and extension-local storage.
-- `ExtensionUI` owns provenance/permission confirmation, grant/revoke controls, extension actions, and
-  local-only popup rendering.
+- `ExtensionHost` owns the `WKWebExtensionController`, the tab/window adapters WebKit calls back into,
+  the permission policy per context, and the bounded package extractor CRX3 install will need.
 - `History`, `Downloads`, `Settings`, and `Security` own their bounded stores and centralized policies.
 
-The current extension runtime is deliberately small. Unsupported `chrome.*` methods fail closed; they
-are not silently shimmed.
+Which APIs work is WebKit's answer, not the app's. The harness measures it per run rather than this
+document claiming it.
 
 ## Browser profiles and private mode
 
 Normal tabs share the default `WKWebsiteDataStore`. Private tabs use a separate non-persistent data
 store and process pool; closing the last private tab replaces both and ends that in-memory private
-profile. Private tabs are excluded from session restoration, history, snapshots, favicon disk cache,
-extension configuration, and extension storage.
+profile. Private tabs are excluded from session restoration, history, snapshots, the favicon disk cache, and
+the extension controller.
 
 Downloads are the intentional exception: a user may save a file from a private tab. Before starting,
 the UI states that the file remains on the device until deletion. Source/history metadata for a private
@@ -72,105 +71,76 @@ each request/redirect and revalidates the final URL, which reduces DNS-rebinding
 the resolver-to-connect TOCTOU completely. Cross-origin favicon fetching should be reconsidered if a
 future platform API provides peer-address enforcement.
 
-## Extension installation and integrity
+## Extension runtime (Path A)
 
-Default package limits are 50 MiB compressed, 2,000 entries, 16 MiB per entry, 100 MiB expanded, and a
-250:1 compression-ratio threshold for large entries. ZIP and folder imports reject absolute/traversal
-paths, empty/dot components, backslashes, drive paths, NUL/control bytes, case/Unicode collisions,
-symlinks, unsupported objects, executable extensions, and native binary magic. CRC is checked while
-extracting, and staging is protected as temporary sensitive data.
-
-Manifest JSON is limited to 1 MiB and receives a depth/string preflight before Codable decoding.
-Manifest collections, strings, match patterns, resource references, and action metadata have explicit
-caps. Unknown API permissions are rejected.
-
-The package SHA-256 covers normalized relative paths, lengths, and file bytes; the first 128 bits form
-the extension ID. The install confirmation shows name, version, ID, local source, SHA-256, publisher
-state (`Not verified`), requested APIs/sites, and a prominent `<all_urls>` warning. Installation
-recomputes the staged identity. Every full repository scan/reload recomputes a bounded tree identity and
-checks the directory name, manifest, metadata, ID, and digest. Resource reads then reuse that verified
-in-process snapshot. The runtime manifest copy must match the package manifest byte-for-byte, so a
-metadata-preserving manifest substitution cannot bypass the package digest. This avoids a 100 MiB tree
-rehash for each referenced file. Package commit reuses the same bounded folder copier as import rather
-than recursively copying an unbounded tree. Repository enumeration has a hard inspection bound and
-fails closed if truncated; at most 128 extensions are installed by default. Repository mutations
-invalidate or replace the snapshot and trigger a full runtime reload. One corrupt extension is
-quarantined without hiding valid peers, and a later valid package with that ID may replace the
-quarantined directory.
-
-Packages are not signed and publisher identity is not authenticated. Hashes identify exact bytes only.
-
-## Permission contract
-
-Permission state separates:
+ADR-001: the extension runtime is Apple's `WKWebExtension` stack, minimum iOS 18.4. The app does not
+parse manifests, does not build content scripts, and does not implement any `chrome.*` method. What the
+app owns is the browser side of the contract WebKit asks for.
 
 ```text
-declared API capabilities
-persisted granted API capabilities
-declared host/content-script patterns
-persisted host grants (which may be narrower than declarations)
-temporary activeTab origin keyed by tab UUID
-enabled state
+WKWebExtension(resourceBaseURL:)  ->  WKWebExtensionContext  ->  WKWebExtensionController
+                                                                        |
+       WebExtensionHost  <- delegate callbacks (tabs, windows, permissions, messages)
+             |
+             +-- WebExtensionTabAdapter   (WKWebExtensionTab)   -> TabManager
+             +-- WebExtensionWindowAdapter (WKWebExtensionWindow)
+             +-- WebExtensionHarnessChannel (test-only API probe transport)
 ```
 
-Install does not grant `<all_urls>`, broad hosts, `tabs`, or `scripting`. `storage` and `activeTab` may
-start enabled when declared: storage is quota-bound/namespaced, and activeTab remains inert until the
-user invokes the extension. Legacy metadata without grant fields migrates fail-closed.
+`WebExtensionHost` holds the single controller, keeps a `UUID -> WebExtensionTabAdapter` registry, and
+mirrors browser events into the runtime through `TabWebExtensionObserving`: open, close, activate, move,
+and property changes. Ordering is fixed — the window is announced before its tabs, and a tab is opened
+before it can be activated. Private tabs are filtered out of every one of those calls.
 
-Extension Details offers Ask, Current Website, Selected Websites, and All Requested Websites. Selected
-domains are converted to conservative exact-host patterns that preserve the manifest scheme/path and
-must be subsets of a declaration. Domains can be added/removed. Enabling all requested access is a
-separate confirmation, with stronger text for `<all_urls>`. API capability grants are displayed and
-revoked separately with human-readable explanations.
+`WebExtensionHost.loadExtension` assigns `uniqueIdentifier` before load. The default is a fresh UUID per
+install and it is what the extension reads as `browser.runtime.id`, so anything keyed on the default is
+lost on reinstall. Apple documents the property as settable only while the context is unloaded. The
+harness measures this end to end: an assigned identifier reaches JavaScript as `browser.runtime.id`
+(`runtime.id` probe, PASS, CI run 32226404376).
 
-Revocation updates the permission actor, immediately suspends bridge dispatch, rebuilds owned
-scripts/handlers, and reloads tracked normal web views so previously installed user scripts cannot
-silently survive. Reload requests are serialized; only the newest successful generation resumes bridge
-dispatch, and in-flight operations are cancelled before side effects. A failed repository reload clears
-prepared permissions, handlers, user scripts, idle jobs, and reloads tracked pages while leaving the
-bridge suspended; stale DOM-only scripts are not retained as a fallback. Future API calls and content
-scripts fail the new policy. A user-invoked extension action can create an activeTab grant only for the
-current normal tab/origin; it is revoked on navigation, tab close, disable, action failure, active-tab
-change, or revocation of the `activeTab` capability itself.
+`loadBackgroundContent` takes a timeout. A manifest the runtime cannot start — an MV3
+`background.service_worker`, for one — never calls the completion handler at all, so without a deadline
+the caller hangs instead of reporting that fact.
 
-Declarative `content_scripts.matches` authorizes only that rule; it does not create programmatic host
-access. `exclude_matches` remains effective. `tabs` and `scripting` require their API grants, and script
-execution additionally requires a persisted programmatic host grant or matching activeTab grant.
+Permission answers come from a `WebExtensionPermissionPolicy` per context. `trustFirstPartyBundle`
+grants every requested permission and match pattern and exists for the bundled harness fixture only.
+`denyAll` is the fallback for any context whose policy was not recorded. There is no user-facing install
+or grant UI in the tree right now; the manager UI was removed with the Path B runtime and is rebuilt on
+Path A in M4, together with the CRX3 installer and the §7 confirmation flow.
 
-## Content scripts, IPC, storage, and popup isolation
+### Private browsing
 
-Each extension receives a named `WKContentWorld` and a native-owned message handler; identity comes
-from that handler/world, not message data. One owner-aware user-script registry composes browser,
-security, and per-extension scripts before the necessary WebKit-wide rebuild. A dedicated per-tab
-`document_idle` scheduler defers work after navigation finish, replaces stale jobs, and cancels/rechecks
-across commit, failure, and tab close.
+`WKWebViewConfiguration` is copied when the web view is created, so `webExtensionController` cannot be
+corrected afterwards. `WebViewConfigurationProvider.configuration(isPrivate:)` therefore attaches the
+controller to normal configurations only and leaves it `nil` for private ones. That single assignment is
+the enforcement point for "extensions are off in private tabs", and `PrivateModeTests` asserts both
+halves of it — the controller present on normal, absent on private, before and after a profile reset.
 
-The JavaScript bridge accepts only a flat serialized JSON string. Native code checks its UTF-8 byte
-length, nesting, string length, and structural-token budget before `JSONSerialization` or recursive
-conversion; dictionary/object message bodies are rejected. Responses cross WebKit as bounded JSON
-strings and are parsed in JavaScript. Standard limits include 256 KiB incoming, 512 KiB outgoing,
-depth 16, 4,096 JSON nodes, 1,024 aggregate object members/array elements, 64 KiB strings, 20
-requests/second per extension/API/tab, 40-request extension bursts, eight outstanding per extension,
-four per extension/API, and a ten-second timeout. Completion accounting is idempotent.
+### Package unpacking
 
-`tabs.create` also has a per-extension creation window and the browser-wide 50-tab cap.
-`scripting.executeScript` limits inline source, file count, each file, aggregate source, result size, and
-parallel executions; runtime content-script preparation also has a 16 MiB / 512-script aggregate budget
-across all enabled extensions, rather than multiplying a per-extension allowance. Script execution rechecks the
-live URL before and inside evaluation. Storage validates keys and
-values before merge, limits each operation, validates persisted JSON depth before decode, and enforces a
-5 MiB per-extension encoded quota. Oversized or malformed local storage is moved to a protected
-`local.corrupt-*.json` file and the namespace recovers empty; genuine read I/O failures remain errors.
+`ExtensionHost/Install/` is what survived the Path B teardown, kept because CRX3 install still has to
+produce a directory before `WKWebExtension(resourceBaseURL:)` can read it.
 
-Popups use a non-persistent store, load only files contained in the verified extension root, cancel
-non-file navigation, and install both a content-rule blocklist and locked JavaScript stubs for fetch,
-XHR, WebSocket, EventSource, workers, and sendBeacon. This is a deny-all network boundary; host grants
-do not currently enable popup network access.
+`SafeZIPExtractor` bounds the archive at 50 MiB compressed, 2,000 entries, 16 MiB per entry, 100 MiB
+expanded, and a 250:1 compression-ratio threshold for large entries. Entry paths are rejected for
+absolute/traversal forms, empty or dot components, backslashes, drive paths, NUL and control bytes,
+case/Unicode collisions, symlinks, unsupported object types, executable extensions, and native binary
+magic. CRC is checked while extracting.
 
-Content worlds are not DOM sandboxes: an authorized content script can read/change the matching page.
-The bridge supports Promise-style `runtime.sendMessage`, `storage.local`, `tabs.query/create`,
-`scripting.executeScript`, and `action.getTitle/setTitle`; background service workers, native messaging,
-webRequest/DNR, long-lived ports, and broad Chrome parity are unsupported.
+`ExtensionIdentity` computes a SHA-256 over normalized relative paths, lengths, and file bytes; the
+first 128 bits form a package identifier. `ExtensionResourcePath` is the path-safety check the extractor
+calls. Nothing in this directory reads a manifest.
+
+Packages are not signed and publisher identity is not authenticated. Hashes identify exact bytes only.
+CRX3 signature verification is M4 work; per spec §7 an unverifiable signature must produce a warning
+banner and a two-step confirmation, never a silent install.
+
+### What the runtime actually supports
+
+Measured, not assumed. The bundled `APIHarness` fixture probes 90 APIs and prints a pass/fail table on
+every CI run; `COMPATIBILITY.md` carries the current matrix and `M2_REPORT.md` the run it came from.
+Latest: 42 pass, 0 fail, 18 available-but-unexercised, 26 unsupported, 4 skipped, on iOS 18.5 simulator.
+Simulator results are a smoke test, not device evidence.
 
 ## Downloads and persistence
 
@@ -182,16 +152,15 @@ sanitized unique visible filename. Startup reconciliation fails interrupted reco
 partials, marks missing completed files, deletes hidden orphan partials (including metadata-free private
 transfers), and surfaces bounded safe untracked completed files as recovered downloads.
 
-Tab, history, download, extension, favicon, and snapshot stores bound file bytes/counts and normalize
+Tab, history, download, favicon, and snapshot stores bound file bytes/counts and normalize
 attacker-controlled strings/URLs before persistence. Externally influenced files use a streaming bounded
 reader, so growing a file after its metadata check cannot bypass the allocation limit. Malformed
-oversized tab/history records are quarantined or reset; corrupt extension storage and packages are
-isolated individually. Direct-child scans for extension and favicon directories are streaming and
-bounded rather than materializing arbitrary directory contents. Atomic writes are used for metadata.
+oversized tab/history records are quarantined or reset. Direct-child scans for favicon directories are
+streaming and bounded rather than materializing arbitrary directory contents. Atomic writes are used for metadata.
 
 Data protection is centralized:
 
-- browser state, metadata, extension files/storage, snapshots, and favicons:
+- browser state, metadata, snapshots, and favicons:
   `completeUntilFirstUserAuthentication`;
 - user downloads: `completeUnlessOpen`;
 - import staging/temporary sensitive files: `complete`.
@@ -201,14 +170,14 @@ not equivalent evidence.
 
 ## Concurrency and lifecycle
 
-UIKit/WebKit ownership stays on `@MainActor`. Persistence, permissions, request limiting, matching,
-storage, favicon brokerage/cache, and repositories use actors. Extension setting mutations and download
-metadata writes are serialized. Async work rechecks tab/web-view identity and URL after suspension;
+UIKit/WebKit ownership stays on `@MainActor`, including the whole extension host — `WKWebExtension`
+and its protocols are main-actor-isolated, so there is no choice there. Persistence, favicon
+brokerage/cache, and repositories use actors. Download metadata writes are serialized. Async work rechecks tab/web-view identity and URL after suspension;
 favicon requests and idle injection support cancellation. Late download callbacks are idempotently
 discarded after tracking is removed.
 
-Memory warnings snapshot and suspend background tabs. Favicon memory/disk caches, tab count, extension
-source preparation, images, payloads, storage, downloads, and persisted collections have explicit caps.
+Memory warnings snapshot and suspend background tabs. Favicon memory/disk caches, tab count, images, payloads,
+downloads, and persisted collections have explicit caps.
 
 ## CI and verification status
 

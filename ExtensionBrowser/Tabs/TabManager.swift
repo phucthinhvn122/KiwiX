@@ -376,7 +376,7 @@ final class TabManager {
 
     private func ensureWebView(for tab: Tab) {
         guard tab.webView == nil else { return }
-        tab.webView = webViewFactory.makeWebView(tabID: tab.id, isPrivate: tab.isPrivate)
+        tab.webView = webViewFactory.makeWebView(isPrivate: tab.isPrivate)
         delegate?.tabManager(self, didCreateWebViewFor: tab)
     }
 

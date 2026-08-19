@@ -5,7 +5,6 @@ final class BrowserStartPageView: UIView {
     var onPrivateTab: (() -> Void)?
     var onHistory: (() -> Void)?
     var onDownloads: (() -> Void)?
-    var onExtensions: (() -> Void)?
 
     private let scrollView = UIScrollView()
     private let contentContainer = UIView()
@@ -17,7 +16,6 @@ final class BrowserStartPageView: UIView {
     private let privateButton = BrowserStartPageView.makeActionButton(title: "Private", imageName: "hand.raised.fill")
     private let historyButton = BrowserStartPageView.makeActionButton(title: "History", imageName: "clock.arrow.circlepath")
     private let downloadsButton = BrowserStartPageView.makeActionButton(title: "Downloads", imageName: "arrow.down.circle.fill")
-    private let extensionsButton = BrowserStartPageView.makeActionButton(title: "Extensions", imageName: "puzzlepiece.extension.fill")
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -79,7 +77,6 @@ final class BrowserStartPageView: UIView {
         privateButton.addAction(UIAction { [weak self] _ in self?.onPrivateTab?() }, for: .touchUpInside)
         historyButton.addAction(UIAction { [weak self] _ in self?.onHistory?() }, for: .touchUpInside)
         downloadsButton.addAction(UIAction { [weak self] _ in self?.onDownloads?() }, for: .touchUpInside)
-        extensionsButton.addAction(UIAction { [weak self] _ in self?.onExtensions?() }, for: .touchUpInside)
 
         let brandStack = UIStackView(arrangedSubviews: [logoContainer, titleLabel, subtitleLabel])
         brandStack.axis = .vertical
@@ -88,7 +85,7 @@ final class BrowserStartPageView: UIView {
         brandStack.setCustomSpacing(12, after: logoContainer)
 
         let firstRow = UIStackView(arrangedSubviews: [privateButton, historyButton])
-        let secondRow = UIStackView(arrangedSubviews: [downloadsButton, extensionsButton])
+        let secondRow = UIStackView(arrangedSubviews: [downloadsButton])
         for row in [firstRow, secondRow] {
             row.axis = .horizontal
             row.distribution = .fillEqually
@@ -143,8 +140,7 @@ final class BrowserStartPageView: UIView {
             logoImageView.centerYAnchor.constraint(equalTo: logoContainer.centerYAnchor),
             privateButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 72),
             historyButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 72),
-            downloadsButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 72),
-            extensionsButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 72)
+            downloadsButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 72)
         ])
     }
 

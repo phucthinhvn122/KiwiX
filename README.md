@@ -76,8 +76,7 @@ Mở pull request để workflow **Build Simulator** compile và chạy unit tes
 |   |-- App/
 |   |-- BrowserCore/
 |   |-- Tabs/
-|   |-- ExtensionKit/
-|   |-- ExtensionUI/
+|   |-- ExtensionHost/
 |   |-- History/
 |   |-- Settings/
 |   |-- Shared/
@@ -94,14 +93,13 @@ Mở pull request để workflow **Build Simulator** compile và chạy unit tes
 
 - `BrowserCore`: UIKit browser shell, address/search parsing, `WKWebView` configuration và navigation.
 - `Tabs`: model/session store, tạo/chọn/đóng tab, snapshot và lifecycle `ACTIVE` / `WARM` / `SUSPENDED`.
-- `ExtensionKit`: manifest parser/validator, ZIP installer, deterministic extension ID, URL matcher, permission gate, storage namespace, content-script injection và bridge message.
-- `ExtensionUI`: Files picker, preview permission trước khi install, danh sách bật/tắt/xóa extension và details.
+- `ExtensionHost`: Path A (ADR-001). Giữ `WKWebExtensionController`, adapter tab/window, delegate trả lời runtime của Apple, harness channel đo API matrix. `Install/` chỉ còn phần giải nén an toàn + checksum để CRX3 (M4) có thư mục cho `WKWebExtension(resourceBaseURL:)`. Không parse manifest, không giả lập `chrome.*`.
 - `Settings`: search engine built-in/custom và thông tin privacy. `History` có actor store + màn hình xem/xóa/mở lại; `Downloads` nhận file trực tiếp từ WebKit, hiển thị tiến độ và cho phép mở/xóa file.
-- `Shared`: logging, signpost, diagnostics và boundary hẹp giữa browser với extension runtime.
+- `Shared`: logging, signpost, diagnostics.
 
-Normal tabs dùng persistent website data store và chia sẻ process pool. Private tabs dùng non-persistent store/process pool riêng, không ghi history/session và không cấu hình extension runtime trong MVP.
+Normal tabs dùng persistent website data store và chia sẻ process pool. Private tabs dùng non-persistent store/process pool riêng, không ghi history/session, và `webExtensionController` để `nil` — `WKWebViewConfiguration` được copy lúc tạo web view nên đây là điểm duy nhất ép được §7.
 
-Browser MVP hiện có start page KiwiX, bottom toolbar hai hàng Back/Forward, address-or-search, Reload/Stop, tab count và menu; progress KVO, page title/URL tracking, Share, Open in External App, History, Downloads, lỗi navigation + Retry, JavaScript alert/confirm/prompt và mở `target=_blank` thành tab mới. Tab switcher hiển thị snapshot/lifecycle, normal session được persist; memory warning snapshot rồi release toàn bộ background web view. Debug build có metrics URL/tab/live web-view/navigation/memory cùng extension diagnostics khi runtime đã đăng ký.
+Browser MVP hiện có start page KiwiX, bottom toolbar hai hàng Back/Forward, address-or-search, Reload/Stop, tab count và menu; progress KVO, page title/URL tracking, Share, Open in External App, History, Downloads, lỗi navigation + Retry, JavaScript alert/confirm/prompt và mở `target=_blank` thành tab mới. Tab switcher hiển thị snapshot/lifecycle, normal session được persist; memory warning snapshot rồi release toàn bộ background web view. Debug build có metrics URL/tab/live web-view/navigation/memory cùng trạng thái attach của extension host. UI quản lý extension đã gỡ cùng runtime Path B, sẽ dựng lại trên Path A ở M4.
 
 ## GitHub Actions
 

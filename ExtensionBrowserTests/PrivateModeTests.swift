@@ -4,30 +4,39 @@ import XCTest
 
 @MainActor
 final class PrivateModeTests: XCTestCase {
-    func testPrivateConfigurationUsesEphemeralIsolationAndSkipsExtensionIntegration() {
-        let bridge = BrowserExtensionBridge.shared
-        let previousIntegration = bridge.integration
-        let integration = ExtensionIntegrationSpy()
-        bridge.integration = integration
-        defer { bridge.integration = previousIntegration }
-        let provider = WebViewConfigurationProvider(extensionBridge: bridge)
+    /// Spec §7: extensions are off in private browsing. Under Path A that is one property —
+    /// a private tab's configuration must carry no `webExtensionController` at all, because the
+    /// configuration is copied when the web view is built and cannot be corrected afterwards.
+    func testPrivateConfigurationUsesEphemeralIsolationAndCarriesNoExtensionController() {
+        let provider = WebViewConfigurationProvider()
+        let host = WebExtensionHost(configuration: .nonPersistent())
+        provider.webExtensionHost = host
 
-        let normal = provider.configuration(tabID: UUID(), isPrivate: false)
-        let firstPrivate = provider.configuration(tabID: UUID(), isPrivate: true)
-        let secondPrivate = provider.configuration(tabID: UUID(), isPrivate: true)
+        let normal = provider.configuration(isPrivate: false)
+        let firstPrivate = provider.configuration(isPrivate: true)
+        let secondPrivate = provider.configuration(isPrivate: true)
 
         XCTAssertTrue(normal.websiteDataStore === WKWebsiteDataStore.default())
         XCTAssertFalse(firstPrivate.websiteDataStore === WKWebsiteDataStore.default())
         XCTAssertTrue(firstPrivate.websiteDataStore === secondPrivate.websiteDataStore)
         XCTAssertFalse(normal.processPool === firstPrivate.processPool)
         XCTAssertTrue(firstPrivate.processPool === secondPrivate.processPool)
-        XCTAssertEqual(integration.configuredContexts.count, 1)
-        XCTAssertEqual(integration.configuredContexts.first?.isPrivate, false)
+
+        XCTAssertTrue(
+            normal.webExtensionController === host.controller,
+            "A normal tab must be attached to the extension controller, or no extension ever runs."
+        )
+        XCTAssertNil(
+            firstPrivate.webExtensionController,
+            "A private tab reached the extension controller."
+        )
+        XCTAssertNil(secondPrivate.webExtensionController)
 
         provider.resetPrivateProfile()
-        let resetPrivate = provider.configuration(tabID: UUID(), isPrivate: true)
+        let resetPrivate = provider.configuration(isPrivate: true)
         XCTAssertFalse(resetPrivate.websiteDataStore === firstPrivate.websiteDataStore)
         XCTAssertFalse(resetPrivate.processPool === firstPrivate.processPool)
+        XCTAssertNil(resetPrivate.webExtensionController)
     }
 
     func testPrivateTabsAreRemovedAtPersistenceBoundary() async throws {
@@ -85,17 +94,5 @@ final class PrivateModeTests: XCTestCase {
             isPrivate: isPrivate,
             state: .active
         )
-    }
-}
-
-@MainActor
-private final class ExtensionIntegrationSpy: BrowserExtensionIntegrating {
-    private(set) var configuredContexts: [BrowserExtensionTabContext] = []
-
-    func configure(
-        userContentController: WKUserContentController,
-        context: BrowserExtensionTabContext
-    ) {
-        configuredContexts.append(context)
     }
 }

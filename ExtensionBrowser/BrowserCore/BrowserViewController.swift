@@ -5,7 +5,6 @@ import WebKit
 final class BrowserViewController: UIViewController {
     private let tabManager: TabManager
     private let settingsStore: BrowserSettingsStore
-    private let extensionBridge: BrowserExtensionBridge
     private let historyStore: HistoryStore
     private let downloadCoordinator: DownloadCoordinator
     private let faviconService: FaviconService
@@ -30,10 +29,6 @@ final class BrowserViewController: UIViewController {
 
     private weak var displayedWebView: WKWebView?
     private var webViewObservations: [NSKeyValueObservation] = []
-    private var extensionActions: [BrowserExtensionActionDescriptor] = []
-    private var extensionActionRefreshTask: Task<Void, Never>?
-    private var extensionActionRefreshGeneration = 0
-    private var extensionActionInvocationInProgress = false
     private var faviconTasks: [UUID: Task<Void, Never>] = [:]
     private var faviconGenerations: [UUID: Int] = [:]
     private let externalNavigationRateLimiter = ExternalNavigationRateLimiter()
@@ -43,14 +38,12 @@ final class BrowserViewController: UIViewController {
     init(
         tabManager: TabManager? = nil,
         settingsStore: BrowserSettingsStore? = nil,
-        extensionBridge: BrowserExtensionBridge? = nil,
         historyStore: HistoryStore? = nil,
         downloadCoordinator: DownloadCoordinator? = nil,
         faviconService: FaviconService? = nil
     ) {
         self.tabManager = tabManager ?? TabManager()
         self.settingsStore = settingsStore ?? .shared
-        self.extensionBridge = extensionBridge ?? .shared
         self.historyStore = historyStore ?? HistoryStore()
         self.downloadCoordinator = downloadCoordinator ?? DownloadCoordinator()
         self.faviconService = faviconService ?? FaviconService()
@@ -68,13 +61,6 @@ final class BrowserViewController: UIViewController {
         configureInterface()
 
         tabManager.delegate = self
-        extensionBridge.browserHost = self
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleExtensionCreateTabRequest(_:)),
-            name: BrowserExtensionNotifications.requestCreateTab,
-            object: nil
-        )
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleSettingsChange),
@@ -90,11 +76,6 @@ final class BrowserViewController: UIViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         addressField.resignFirstResponder()
-    }
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        refreshExtensionActions()
     }
 
     override func didReceiveMemoryWarning() {
@@ -296,9 +277,6 @@ final class BrowserViewController: UIViewController {
         startPageView.onDownloads = { [weak self] in
             self?.showDownloads()
         }
-        startPageView.onExtensions = {
-            BrowserExtensionNotifications.postPresentManagerRequest()
-        }
     }
 
     private func configureButton(
@@ -486,101 +464,6 @@ final class BrowserViewController: UIViewController {
         menuButton.menu = makeBrowserMenu()
     }
 
-    private func refreshExtensionActions() {
-        extensionActionRefreshTask?.cancel()
-        extensionActionRefreshGeneration += 1
-        let generation = extensionActionRefreshGeneration
-
-        guard let integration = extensionBridge.integration,
-              let tab = extensionActiveTab,
-              !tab.isPrivate else {
-            applyExtensionActions([])
-            return
-        }
-
-        extensionActionRefreshTask = Task { [weak self] in
-            let actions = await integration.availableActions(for: tab)
-            guard !Task.isCancelled,
-                  let self,
-                  self.extensionActionRefreshGeneration == generation,
-                  self.extensionActiveTab?.id == tab.id,
-                  self.extensionActiveTab?.url == tab.url else {
-                return
-            }
-            self.applyExtensionActions(actions)
-        }
-    }
-
-    private func applyExtensionActions(_ actions: [BrowserExtensionActionDescriptor]) {
-        extensionActions = actions
-        menuButton.menu = makeBrowserMenu()
-    }
-
-    private func invokeExtensionAction(_ action: BrowserExtensionActionDescriptor) {
-        guard let integration = extensionBridge.integration,
-              let tab = extensionActiveTab,
-              !tab.isPrivate,
-              !extensionActionInvocationInProgress else {
-            return
-        }
-        extensionActionInvocationInProgress = true
-        menuButton.menu = makeBrowserMenu()
-
-        Task { [weak self] in
-            guard let self else { return }
-            defer {
-                self.extensionActionInvocationInProgress = false
-                self.menuButton.menu = self.makeBrowserMenu()
-            }
-            do {
-                let invocation = try await integration.invokeAction(
-                    extensionID: action.extensionID,
-                    for: tab
-                )
-                switch invocation {
-                case .noPopup:
-                    break
-                case let .presentPopup(controller):
-                    guard self.extensionActiveTab?.id == tab.id,
-                          self.extensionActiveTab?.url == tab.url,
-                          UIApplication.shared.applicationState == .active,
-                          self.presentedViewController == nil else {
-                        return
-                    }
-                    controller.modalPresentationStyle = .popover
-                    if let popover = controller.popoverPresentationController {
-                        popover.sourceView = self.menuButton
-                        popover.sourceRect = self.menuButton.bounds
-                    }
-                    self.present(controller, animated: true)
-                }
-            } catch {
-                if self.extensionActiveTab?.id == tab.id,
-                   self.extensionActiveTab?.url == tab.url,
-                   UIApplication.shared.applicationState == .active {
-                    self.presentExtensionActionError(error)
-                }
-            }
-            self.refreshExtensionActions()
-        }
-    }
-
-    private func presentExtensionActionError(_ error: Error) {
-        guard presentedViewController == nil else {
-            AppLog.extensions.error(
-                "Extension action failed: \(error.localizedDescription, privacy: .private)"
-            )
-            return
-        }
-        let alert = UIAlertController(
-            title: "Extension Action Failed",
-            message: SafeInput.userFacingError(error),
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
-    }
-
     private func makeBrowserMenu() -> UIMenu {
         let loading = displayedWebView?.isLoading == true
         let reload = UIAction(
@@ -617,7 +500,6 @@ final class BrowserViewController: UIViewController {
         }
         let close = UIAction(title: "Close Tab", image: UIImage(systemName: "xmark.square"), attributes: .destructive) { [weak self] _ in
             guard let self, let id = self.tabManager.selectedTabID else { return }
-            self.extensionBridge.integration?.extensionTabDidClose(id: id)
             self.externalNavigationRateLimiter.remove(tabID: id)
             self.webDialogRateLimiter.remove(tabID: id)
             self.popupCreationRateLimiter.remove(tabID: id)
@@ -633,35 +515,13 @@ final class BrowserViewController: UIViewController {
         let downloads = UIAction(title: "Downloads", image: UIImage(systemName: "arrow.down.circle")) { [weak self] _ in
             self?.showDownloads()
         }
-        let extensions = UIAction(title: "Extensions", image: UIImage(systemName: "puzzlepiece.extension")) { _ in
-            BrowserExtensionNotifications.postPresentManagerRequest()
-        }
-
         var children: [UIMenuElement] = [
             reload,
             share,
             openExternal,
             UIMenu(options: .displayInline, children: [newTab, privateTab, close]),
-            UIMenu(options: .displayInline, children: [history, downloads, extensions, settings])
+            UIMenu(options: .displayInline, children: [history, downloads, settings])
         ]
-
-        if !extensionActions.isEmpty {
-            let extensionActionMenu = UIMenu(
-                title: "Extension Actions",
-                image: UIImage(systemName: "puzzlepiece.extension"),
-                children: extensionActions.map { descriptor in
-                    let action = UIAction(
-                        title: descriptor.title,
-                        image: descriptor.iconData.flatMap(UIImage.init(data:))
-                    ) { [weak self] _ in
-                        self?.invokeExtensionAction(descriptor)
-                    }
-                    if extensionActionInvocationInProgress { action.attributes = [.disabled] }
-                    return action
-                }
-            )
-            children.insert(extensionActionMenu, at: 3)
-        }
 
         #if DEBUG
         children.append(UIAction(title: "Debug Info", image: UIImage(systemName: "ladybug")) { [weak self] _ in
@@ -784,9 +644,8 @@ final class BrowserViewController: UIViewController {
                 "Live WKWebViews": "\(self.tabManager.liveWebViewCount)",
                 "Memory warnings": "\(BrowserDiagnostics.shared.memoryWarningCount)",
                 "Navigation events": "\(BrowserDiagnostics.shared.navigationEventCount)",
-                "Extension adapter": self.extensionBridge.integration == nil ? "Not registered" : "Registered"
+                "Extension host": self.tabManager.webExtensionObserver == nil ? "Not attached" : "Attached"
             ]
-            self.extensionBridge.integration?.debugInformation.forEach { information[$0.key] = $0.value }
             return information
         }
         navigationController?.pushViewController(controller, animated: true)
@@ -805,17 +664,6 @@ final class BrowserViewController: UIViewController {
         dismiss(animated: true)
     }
     #endif
-
-    @objc private func handleExtensionCreateTabRequest(_ notification: Notification) {
-        let url = notification.userInfo?[BrowserExtensionNotifications.UserInfoKey.url] as? URL
-        let activate = notification.userInfo?[BrowserExtensionNotifications.UserInfoKey.activate] as? Bool ?? true
-        if let url, !SafePersistence.isSafePersistedURL(url) { return }
-        do {
-            _ = try tabManager.createTab(url: url, isPrivate: false, select: activate)
-        } catch {
-            presentTabLimitError(error)
-        }
-    }
 
     private func presentTabLimitError(_ error: Error) {
         guard presentedViewController == nil else { return }
@@ -921,9 +769,6 @@ final class BrowserViewController: UIViewController {
         }
     }
 
-    private func extensionContext(for tab: Tab) -> BrowserExtensionTabContext {
-        BrowserExtensionTabContext(tabID: tab.id, isPrivate: tab.isPrivate)
-    }
 }
 
 extension BrowserViewController: UITextFieldDelegate {
@@ -975,12 +820,10 @@ extension BrowserViewController: UITextFieldDelegate {
 extension BrowserViewController: TabManagerDelegate {
     func tabManagerDidChangeTabs(_ manager: TabManager) {
         updateControls()
-        refreshExtensionActions()
     }
 
     func tabManager(_ manager: TabManager, didSelect tab: Tab) {
         display(tab: tab)
-        refreshExtensionActions()
     }
 
     func tabManager(_ manager: TabManager, didUpdate tab: Tab) {
@@ -989,7 +832,6 @@ extension BrowserViewController: TabManagerDelegate {
         updateAddress(for: tab)
         updatePrivateAppearance(for: tab)
         updateControls()
-        refreshExtensionActions()
     }
 
     func tabManager(_ manager: TabManager, didCreateWebViewFor tab: Tab) {
@@ -1009,7 +851,6 @@ extension BrowserViewController: TabSwitcherViewControllerDelegate {
     }
 
     func tabSwitcher(_ controller: TabSwitcherViewController, didCloseTab id: UUID) {
-        extensionBridge.integration?.extensionTabDidClose(id: id)
         externalNavigationRateLimiter.remove(tabID: id)
         webDialogRateLimiter.remove(tabID: id)
         popupCreationRateLimiter.remove(tabID: id)
@@ -1029,29 +870,6 @@ extension BrowserViewController: TabSwitcherViewControllerDelegate {
     }
 }
 
-extension BrowserViewController: BrowserExtensionHost {
-    var extensionVisibleTabs: [BrowserTabDescriptor] {
-        tabManager.tabs.filter { !$0.isPrivate }.map {
-            BrowserTabDescriptor(
-                id: $0.id,
-                title: $0.title,
-                url: $0.url,
-                isPrivate: false,
-                isActive: $0.id == tabManager.selectedTabID
-            )
-        }
-    }
-
-    var extensionActiveTab: BrowserTabDescriptor? {
-        extensionVisibleTabs.first(where: \.isActive)
-    }
-
-    @discardableResult
-    func openTabFromExtension(url: URL?, activate: Bool) throws -> UUID {
-        try tabManager.createTab(url: url, isPrivate: false, select: activate).id
-    }
-}
-
 extension BrowserViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard let tab = tabManager.tab(containing: webView) else { return }
@@ -1068,15 +886,6 @@ extension BrowserViewController: WKNavigationDelegate {
         guard let tab = tabManager.tab(containing: webView) else { return }
         BrowserDiagnostics.shared.recordNavigationEvent()
         tabManager.updateTab(id: tab.id, url: webView.url)
-        if tab.id == tabManager.selectedTabID {
-            refreshExtensionActions()
-        }
-        guard !tab.isPrivate else { return }
-        extensionBridge.integration?.navigationDidCommit(
-            url: webView.url,
-            in: webView,
-            context: extensionContext(for: tab)
-        )
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -1105,14 +914,6 @@ extension BrowserViewController: WKNavigationDelegate {
                     }
                 }
             }
-            extensionBridge.integration?.navigationDidFinish(
-                url: webView.url,
-                in: webView,
-                context: extensionContext(for: tab)
-            )
-        }
-        if tab.id == tabManager.selectedTabID {
-            refreshExtensionActions()
         }
     }
 
@@ -1274,16 +1075,6 @@ extension BrowserViewController: WKNavigationDelegate {
         }
         BrowserDiagnostics.shared.recordNavigationEvent()
         showNavigationError(error, for: tab)
-        if !tab.isPrivate {
-            extensionBridge.integration?.navigationDidFail(
-                url: webView.url,
-                error: error,
-                context: extensionContext(for: tab)
-            )
-        }
-        if tab.id == tabManager.selectedTabID {
-            refreshExtensionActions()
-        }
     }
 }
 

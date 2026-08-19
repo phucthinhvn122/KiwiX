@@ -1,9 +1,14 @@
 import Foundation
 
+/// Path safety for archive entries.
+///
+/// Kept from the retired ExtensionKit runtime: `SafeZIPExtractor` still needs it, and this is the
+/// check that stops a crafted package from writing outside its own directory. The manifest-side
+/// caller is gone — WebKit resolves extension resources itself under ADR-001.
 public enum ExtensionResourcePath {
     public static let maximumPathByteCount = 1_024
 
-    /// Validates an archive or manifest path and returns a stable forward-slash form.
+    /// Validates an archive path and returns a stable forward-slash form.
     public static func normalize(_ path: String, allowsTrailingSlash: Bool = false) throws -> String {
         guard !path.isEmpty,
               path.utf8.count <= maximumPathByteCount,
@@ -14,7 +19,7 @@ public enum ExtensionResourcePath {
               !path.hasPrefix("~"),
               !looksLikeWindowsAbsolutePath(path)
         else {
-            throw ExtensionManifestError.unsafeResourcePath(path)
+            throw ExtensionInstallError.invalidEntryPath(path)
         }
 
         var components = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
@@ -24,23 +29,12 @@ public enum ExtensionResourcePath {
         guard !components.isEmpty,
               components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." })
         else {
-            throw ExtensionManifestError.unsafeResourcePath(path)
+            throw ExtensionInstallError.invalidEntryPath(path)
         }
 
         let normalized = components.joined(separator: "/").precomposedStringWithCanonicalMapping
-        guard !normalized.isEmpty else { throw ExtensionManifestError.unsafeResourcePath(path) }
+        guard !normalized.isEmpty else { throw ExtensionInstallError.invalidEntryPath(path) }
         return normalized
-    }
-
-    public static func containedURL(for path: String, under rootURL: URL) throws -> URL {
-        let normalized = try normalize(path)
-        let root = rootURL.standardizedFileURL
-        let candidate = root.appendingPathComponent(normalized, isDirectory: false).standardizedFileURL
-        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
-        guard candidate.path.hasPrefix(rootPrefix) else {
-            throw ExtensionManifestError.unsafeResourcePath(path)
-        }
-        return candidate
     }
 
     private static func looksLikeWindowsAbsolutePath(_ path: String) -> Bool {

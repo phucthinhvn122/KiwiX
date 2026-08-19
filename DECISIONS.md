@@ -9,9 +9,10 @@ Tài liệu này là cổng quyết định bắt buộc trước khi sửa runt
 ## 1. Baseline của repository
 
 > **Ảnh chụp lúc ra quyết định (trước M0), giữ nguyên để đối chiếu — không phải trạng thái hôm nay.**
-> Tính đến M2: deployment target đã là 18.4 (`project.yml`), `WKWebExtension`/`WKWebExtensionContext`/
-> `WKWebExtensionController` đã có và chạy, repo đã có commit và remote. Còn đúng: `ExtensionKit/` tự
-> parse manifest và giả lập `chrome.*` **vẫn nằm trong production path** — dọn ở M3/M4.
+> Tính đến cuối M2: deployment target đã là 18.4 (`project.yml`), `WKWebExtension`/
+> `WKWebExtensionContext`/`WKWebExtensionController` đã có và chạy, repo đã có commit và remote.
+> Runtime `chrome.*` tự viết (`ExtensionKit/`) và UI quản lý của nó (`ExtensionUI/`) **đã bị gỡ khỏi
+> production path** — xem §2.1. Không còn điểm nào trong ảnh chụp này còn đúng.
 
 Repository hiện tại là PoC theo hướng cũ:
 
@@ -57,6 +58,42 @@ Nguồn:
 - [`WKWebExtension.init(resourceBaseURL:)`](https://developer.apple.com/documentation/webkit/wkwebextension/init(resourcebaseurl:))
 - [Alternative browser engines in the EU](https://developer.apple.com/support/alternative-browser-engines/)
 - [TrollStore supported versions](https://github.com/opa334/TrollStore)
+
+### 2.1 Thực thi — dọn Path B (cuối M2)
+
+Hai runtime song song là một lời nói dối về kiến trúc: đọc code không biết cái nào đang chạy thật.
+Quét phụ thuộc 27 symbol cho thấy `ExtensionKit/` là một đồ thị liên thông, không có ranh giới nào cắt
+được để giữ một phần cho gọn. Nên xoá cả cụm.
+
+**Xoá** (~5.500 dòng): `ExtensionBrowser/ExtensionKit/` (20 file — manifest parser, match pattern,
+permission manager, storage, repository, API registry, content-script injector, resource limits, bridge
+JS, message codec), `ExtensionBrowser/ExtensionUI/` (7 file — manager view/viewmodel, action
+coordinator, popup provider + network isolation, permission list), `Shared/BrowserExtensionIntegration.swift`
+(seam Path B), `Shared/WebViewUserScriptRegistry.swift` (hết consumer), và 11 file test tương ứng
+(67 test).
+
+**Giữ**, chuyển sang `ExtensionHost/Install/`: `SafeZIPExtractor`, `ExtensionIdentity`,
+`ExtensionResourcePath`, cùng `ExtensionInstallModels` (tách ra từ vốn từ lỗi cũ). Lý do: CRX3 ở M4 vẫn
+phải giải nén một archive ra thư mục trước khi `WKWebExtension(resourceBaseURL:)` đọc được, và đây là
+chỗ chặn package độc ghi ra ngoài thư mục của nó. Không file nào trong đó đọc manifest.
+
+**Mất năng lực, ghi rõ để không tự lừa mình** — các bất biến sau mất điểm cưỡng chế trong app, và giờ
+phụ thuộc hoàn toàn vào WebKit, chưa đo:
+
+| Bất biến cũ | Trước | Sau |
+|---|---|---|
+| Permission fail-closed, grant hẹp hơn declaration | `ExtensionPermissionManager` + UI grant/revoke | `WebExtensionPermissionPolicy` chỉ có `trustFirstPartyBundle` / `denyAll`; UI dựng lại ở M4 |
+| Quota storage 5 MiB/extension | `ExtensionLocalStorage` | WebKit quản, chưa đo |
+| Giới hạn IPC/rate limit/script budget | `ExtensionResourceLimits` | WebKit quản, chưa đo |
+| Match pattern đúng theo spec | `WebExtensionMatchPattern` + 7 test | `WKWebExtension.MatchPattern`, chưa đo |
+| Popup deny-all network | `ExtensionPopupNetworkIsolation` | Chưa có popup; M4 |
+| UI xác nhận permission trước install (§7) | `ExtensionManagerView` | **Không còn**. M4 phải dựng lại trước khi có bất kỳ đường cài extension nào cho người dùng |
+
+Hệ quả trực tiếp: **không có đường nào để người dùng cài extension** cho tới M4. Chỉ fixture bundled
+chạy qua harness. Đây là trạng thái an toàn hơn trạng thái cũ (không có bề mặt cài), không phải hồi quy
+bị che.
+
+Số test: 143 → 76.
 
 ## 3. ADR-002 — Kênh ký và phân phối
 

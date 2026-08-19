@@ -4,8 +4,6 @@ import UIKit
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
     private weak var browserViewController: BrowserViewController?
-    private var extensionIntegration: ExtensionBrowserIntegration?
-    private var extensionManagerCoordinator: ExtensionManagerPresentationCoordinator?
     private var webExtensionHost: WebExtensionHost?
 
     func scene(
@@ -17,11 +15,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         KiwiTheme.applyGlobalAppearance()
 
-        let extensionIntegration = ExtensionBrowserIntegration()
-        extensionIntegration.activate()
-        self.extensionIntegration = extensionIntegration
-
-        let configurationProvider = WebViewConfigurationProvider(extensionBridge: .shared)
+        let configurationProvider = WebViewConfigurationProvider()
         let webViewFactory = WebViewFactory(configurationProvider: configurationProvider)
         let tabManager = TabManager(webViewFactory: webViewFactory)
 
@@ -35,12 +29,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         let browser = BrowserViewController(
             tabManager: tabManager,
-            settingsStore: .shared,
-            extensionBridge: .shared
-        )
-        extensionManagerCoordinator = ExtensionManagerPresentationCoordinator(
-            presentingViewController: browser,
-            integration: extensionIntegration
+            settingsStore: .shared
         )
 
         let window = UIWindow(windowScene: windowScene)

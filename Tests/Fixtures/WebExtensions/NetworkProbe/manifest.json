@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "KiwiX Network Enforcement Probe",
+  "version": "1.0",
+  "description": "Measures whether declarativeNetRequest rules actually suppress a request that would otherwise reach a project-controlled server.",
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": false
+  },
+  "permissions": [
+    "declarativeNetRequest",
+    "nativeMessaging",
+    "webRequest"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "network-probe-static",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  }
+}

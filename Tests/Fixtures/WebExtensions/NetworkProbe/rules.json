@@ -1,0 +1,11 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "blocked-static.js",
+      "resourceTypes": ["script", "image", "xmlhttprequest", "sub_frame"]
+    }
+  }
+]

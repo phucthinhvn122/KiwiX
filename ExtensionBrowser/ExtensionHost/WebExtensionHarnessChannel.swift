@@ -19,6 +19,10 @@ final class WebExtensionHarnessChannel {
     private var chunks: [Int: String] = [:]
     private(set) var report: WebExtensionProbeReport?
     var onReport: ((WebExtensionProbeReport) -> Void)?
+    /// Every handshake dictionary, verbatim. M3's enforcement probe uses handshakes as a general
+    /// extension→host signal ("rules installed", "webRequest saw this URL") so it does not have to
+    /// invent a second transport for something M2 already measured as working.
+    var onHandshake: (([String: Any]) -> Void)?
 
     func enable() {
         isEnabled = true
@@ -37,6 +41,7 @@ final class WebExtensionHarnessChannel {
         // reaches the delegate at all. It must be acknowledged but never mistaken for the report:
         // an empty report would latch `deliver` and the real one would be dropped on the floor.
         if let dictionary = message as? [String: Any], dictionary["handshake"] as? Bool == true {
+            onHandshake?(dictionary)
             return true
         }
 

@@ -1,11 +1,13 @@
 import Foundation
 
 enum ExtensionPopupNetworkIsolation {
-    static let blockedSchemesRuleList = #"[
+    static let blockedSchemesRuleList = #"""
+    [
       {"trigger":{"url-filter":"^https?://"},"action":{"type":"block"}},
       {"trigger":{"url-filter":"^wss?://"},"action":{"type":"block"}},
       {"trigger":{"url-filter":"^ftp://"},"action":{"type":"block"}}
-    ]"#
+    ]
+    """#
 
     /// Content rules do not provide a reliable WebSocket boundary on every supported WebKit
     /// release. Install non-configurable network API stubs before extension page code as a

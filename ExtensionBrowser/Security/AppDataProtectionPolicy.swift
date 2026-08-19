@@ -20,7 +20,7 @@ enum AppDataProtectionPolicy {
         category: Category,
         fileManager: FileManager = .default
     ) throws {
-        try fileManager.setAttributes([.protectionKey: category.protection], atPath: url.path)
+        try fileManager.setAttributes([.protectionKey: category.protection], ofItemAtPath: url.path)
     }
 
     static func protectRecursively(

@@ -22,6 +22,8 @@ enum WebExtensionHostError: LocalizedError, Equatable {
     case backgroundContentTimedOut(TimeInterval)
     case messagePortUnsupported
     case tabCreationFailed(String)
+    case navigationBlocked(scheme: String)
+    case tabCreationRateLimited(limit: Int, seconds: Int)
 
     var errorDescription: String? {
         switch self {
@@ -39,6 +41,10 @@ enum WebExtensionHostError: LocalizedError, Equatable {
             return "Native message ports are not available in this build yet."
         case .tabCreationFailed(let reason):
             return reason
+        case .navigationBlocked(let scheme):
+            return "Extensions cannot open \(scheme): URLs."
+        case .tabCreationRateLimited(let limit, let seconds):
+            return "This extension opened too many tabs (limit \(limit) per \(seconds)s)."
         }
     }
 }

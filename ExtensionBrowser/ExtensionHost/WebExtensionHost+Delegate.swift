@@ -41,7 +41,11 @@ extension WebExtensionHost: WKWebExtensionControllerDelegate {
         }
 
         do {
-            let adapter = try openTab(url: configuration.url, activate: configuration.shouldBeActive)
+            let adapter = try openTab(
+                url: configuration.url,
+                activate: configuration.shouldBeActive,
+                for: extensionContext
+            )
             completionHandler(adapter, nil)
         } catch {
             completionHandler(nil, error)

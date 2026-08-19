@@ -84,7 +84,11 @@ phụ thuộc hoàn toàn vào WebKit, chưa đo:
 |---|---|---|
 | Permission fail-closed, grant hẹp hơn declaration | `ExtensionPermissionManager` + UI grant/revoke | `WebExtensionPermissionPolicy` chỉ có `trustFirstPartyBundle` / `denyAll`; UI dựng lại ở M4 |
 | Quota storage 5 MiB/extension | `ExtensionLocalStorage` | WebKit quản, chưa đo |
-| Giới hạn IPC/rate limit/script budget | `ExtensionResourceLimits` | WebKit quản, chưa đo |
+| Giới hạn IPC/script budget | `ExtensionResourceLimits` | WebKit quản, chưa đo |
+| Rate limit tạo tab | `ExtensionTabCreationLimiter` | **Không phải WebKit quản** — `tabs.create`/`duplicate` quay lại app qua delegate. Đã dựng lại: `WebExtensionTabRateLimiter`, 10 tab/60s mỗi extension |
+| Chặn scheme URL extension mở | `ExtensionAPIRegistry.isAllowedTabURL` | Đã dựng lại: `WebExtensionTabPolicy.isAllowedNavigationURL` (http/https/`about:blank`, không credential, ≤8 KiB) |
+| Tên extension không spoof được bằng ký tự bidi | `ManifestParser` | **Chưa có**. Hiện không chỗ nào render tên extension nên chưa với tới được. M4 phải cho `WKWebExtension.displayName` đi qua `SafeInput.displayText` — WebKit không sanitize |
+| activeTab hết hiệu lực khi điều hướng | `ExtensionPermissionManager` | Vacuous: `shouldGrantPermissionsOnUserGesture` trả `false`, không cấp activeTab. M3 thay bằng `userGesturePerformed(in:)` |
 | Match pattern đúng theo spec | `WebExtensionMatchPattern` + 7 test | `WKWebExtension.MatchPattern`, chưa đo |
 | Popup deny-all network | `ExtensionPopupNetworkIsolation` | Chưa có popup; M4 |
 | UI xác nhận permission trước install (§7) | `ExtensionManagerView` | **Không còn**. M4 phải dựng lại trước khi có bất kỳ đường cài extension nào cho người dùng |
@@ -93,7 +97,15 @@ Hệ quả trực tiếp: **không có đường nào để người dùng cài 
 chạy qua harness. Đây là trạng thái an toàn hơn trạng thái cũ (không có bề mặt cài), không phải hồi quy
 bị che.
 
-Số test: 143 → 76.
+Số test: 143 → 76, cộng 7 test mới cho hai control dựng lại → 83.
+
+**Một lỗi trong bảng trên, tự sửa sau khi kiểm chứng lại**: bản đầu tiên của mục này ghi rate limit
+tạo tab là "WebKit quản". Sai. `tabs.create` đi qua `WebExtensionHost+Delegate.swift:44` và
+`tabs.duplicate` qua `WebExtensionTabAdapter.swift:176`, cả hai gọi thẳng vào `WebExtensionHost.openTab`
+của app. Trần 50 tab của `TabManager` là trần dung lượng, không phải trần tốc độ — đóng tab là trả lại
+slot, nên vòng create/close không có chặn nào. Tương tự, `TabManager.navigate` đưa URL thẳng vào
+`WKWebView.load` không lọc scheme, mà gate điều hướng của app lại cố tình cho `file`/`data`/`blob` với
+load do người dùng khởi tạo. Hai lỗ này là **live**, không phải deferred. Đã vá trong cùng đợt.
 
 ## 3. ADR-002 — Kênh ký và phân phối
 

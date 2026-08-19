@@ -91,6 +91,11 @@ final class WebExtensionTabAdapter: NSObject, WKWebExtensionTab {
             completionHandler(WebExtensionHostError.tabCreationFailed("No browser attached."))
             return
         }
+        // tabs.update is the same capability as tabs.create with a URL, so it gets the same gate.
+        guard WebExtensionTabPolicy.isAllowedNavigationURL(url) else {
+            completionHandler(WebExtensionHostError.navigationBlocked(scheme: url.scheme ?? "unknown"))
+            return
+        }
         if host.loadInterceptedPageIfNeeded(url: url, tabID: tabID) {
             completionHandler(nil)
             return
@@ -175,7 +180,8 @@ final class WebExtensionTabAdapter: NSObject, WKWebExtensionTab {
         do {
             let adapter = try host.openTab(
                 url: configuration.url ?? tab?.url,
-                activate: configuration.shouldBeActive
+                activate: configuration.shouldBeActive,
+                for: context
             )
             completionHandler(adapter, nil)
         } catch {

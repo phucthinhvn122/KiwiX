@@ -20,6 +20,7 @@ final class WebExtensionHost: NSObject {
 
     private var tabAdapters: [UUID: WebExtensionTabAdapter] = [:]
     private var policies: [ObjectIdentifier: WebExtensionPermissionPolicy] = [:]
+    private let tabRateLimiter = WebExtensionTabRateLimiter()
 
     /// Test-only hook: serves canned HTML for a URL instead of hitting the network, so
     /// content-script probes are deterministic and offline.
@@ -105,6 +106,7 @@ final class WebExtensionHost: NSObject {
         }
         loadedContexts.removeAll()
         policies.removeAll()
+        tabRateLimiter.forgetAll()
     }
 
     /// - Parameter timeout: seconds to wait before giving up. Required in tests: a manifest the
@@ -185,10 +187,25 @@ final class WebExtensionHost: NSObject {
 
     // MARK: - Tab operations requested by extensions
 
+    /// - Parameter context: the extension asking. Required, because both the URL check and the rate
+    ///   budget are per extension and there must be no caller that bypasses either.
     @discardableResult
-    func openTab(url: URL?, activate: Bool) throws -> WebExtensionTabAdapter {
+    func openTab(
+        url: URL?,
+        activate: Bool,
+        for context: WKWebExtensionContext
+    ) throws -> WebExtensionTabAdapter {
         guard let tabManager else {
             throw WebExtensionHostError.tabCreationFailed("No browser is attached to the extension host.")
+        }
+        if let url, !WebExtensionTabPolicy.isAllowedNavigationURL(url) {
+            throw WebExtensionHostError.navigationBlocked(scheme: url.scheme ?? "unknown")
+        }
+        guard tabRateLimiter.allow(context: context) else {
+            throw WebExtensionHostError.tabCreationRateLimited(
+                limit: tabRateLimiter.limit,
+                seconds: Int(tabRateLimiter.window)
+            )
         }
 
         let tab: Tab

@@ -71,11 +71,18 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
     private var waiters: [NavigationSettledWaiter] = []
     private var compiledRuleListIdentifier: String?
 
-    /// `allowed.js` last. The order is the argument, not a detail.
+    /// `allowed.js` last: the order is the argument, not a detail.
+    ///
+    /// A 2x2 over {bare substring, substring containing a dot} x {our rule list, the extension's
+    /// DNR rules}. Run 32234424615 left exactly one uncontrolled difference between the working
+    /// control and the failing treatment -- the control's filter had no dot in it -- and a bug
+    /// report with that hole in it deserves to be rejected.
     private static let subresources = [
-        "blocked-static.js",
-        "blocked-dynamic.js",
-        "blocked-control.js",
+        "blocked-static.js",   // DNR static rule, filter "blocked-static.js" (dotted)
+        "blocked-dynamic.js",  // DNR dynamic rule, filter "blocked-dynamic.js" (dotted)
+        "blocked-nodot.js",    // DNR static rule, filter "blocked-nodot" (bare)
+        "blocked-control.js",  // our rule list, url-filter "blocked-control" (bare)
+        "blocked-ctldot.js",   // our rule list, url-filter "blocked-ctldot.js" (dotted)
         "allowed.js"
     ]
     private static let phases = ["baseline", "early", "late", "control"]
@@ -269,9 +276,11 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
             WKContentRuleListStore.default(),
             "No default content rule list store; the positive control cannot run."
         )
-        let json = """
-        [{"trigger":{"url-filter":"blocked-control","resource-type":["script"]},"action":{"type":"block"}}]
-        """
+        // Two triggers, matching the two filter forms the extension's rules use, so the control
+        // and the treatment differ only in who supplied the rule.
+        let bare = #"{"trigger":{"url-filter":"blocked-control","resource-type":["script"]},"action":{"type":"block"}}"#
+        let dotted = #"{"trigger":{"url-filter":"blocked-ctldot.js","resource-type":["script"]},"action":{"type":"block"}}"#
+        let json = "[\(bare),\(dotted)]"
 
         let list: WKContentRuleList = try await withCheckedThrowingContinuation { continuation in
             store.compileContentRuleList(
@@ -352,6 +361,7 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
         let earlyAllowedArrived = try await runPhase("early", in: earlyWebView)
         let earlyStaticBlocked = !server.received("/early/blocked-static.js")
         let earlyDynamicBlocked = !server.received("/early/blocked-dynamic.js")
+        let earlyBareBlocked = !server.received("/early/blocked-nodot.js")
 
         // ---- Phase 3: the identical navigation, after a deliberate compilation grace period.
         try await Task.sleep(nanoseconds: UInt64(Self.compilationGrace * 1_000_000_000))
@@ -359,13 +369,15 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
         let lateAllowedArrived = try await runPhase("late", in: lateWebView)
         let lateStaticBlocked = !server.received("/late/blocked-static.js")
         let lateDynamicBlocked = !server.received("/late/blocked-dynamic.js")
+        let lateBareBlocked = !server.received("/late/blocked-nodot.js")
 
         // ---- Phase 4: positive control. Our own rule list, WebKit's own enforcement path.
         let controlList = try await compileControlRuleList()
         let controlWebView = try makeTabWebView()
         controlWebView.configuration.userContentController.add(controlList)
         let controlAllowedArrived = try await runPhase("control", in: controlWebView)
-        let controlBlocked = !server.received("/control/blocked-control.js")
+        let controlBareBlocked = !server.received("/control/blocked-control.js")
+        let controlDottedBlocked = !server.received("/control/blocked-ctldot.js")
 
         // Printed whether the test passes or fails: this is the measurement DECISIONS §4.2 asks
         // for and it has to survive in the CI log either way.
@@ -374,7 +386,10 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
             + "earlyDynamic=\(earlyDynamicBlocked ? "blocked" : "reached") "
             + "lateStatic=\(lateStaticBlocked ? "blocked" : "reached") "
             + "lateDynamic=\(lateDynamicBlocked ? "blocked" : "reached") "
-            + "control=\(controlBlocked ? "blocked" : "reached") "
+            + "earlyBare=\(earlyBareBlocked ? "blocked" : "reached") "
+            + "lateBare=\(lateBareBlocked ? "blocked" : "reached") "
+            + "controlBare=\(controlBareBlocked ? "blocked" : "reached") "
+            + "controlDotted=\(controlDottedBlocked ? "blocked" : "reached") "
             + "webRequestObserved=\(observedByWebRequest.count)")
         print("KIWIX_DNR_MATCHED \(matchedSignal.map { "\($0)" } ?? "no signal")")
         print("KIWIX_DNR_PATHS \(server.requestedPaths.joined(separator: " "))")
@@ -385,12 +400,19 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
         XCTAssertTrue(lateAllowedArrived, "late: allowed.js never arrived. \(server.requestedPaths)")
         XCTAssertTrue(controlAllowedArrived, "control: allowed.js never arrived. \(server.requestedPaths)")
         XCTAssertTrue(
-            controlBlocked,
+            controlBareBlocked,
             "The positive control did not block. A WKContentRuleList compiled by this test, "
                 + "attached to a web view from the shipping factory, failed to suppress "
                 + "/control/blocked-control.js. Until this passes, no statement about "
                 + "declarativeNetRequest can be made from this test — the apparatus itself is "
                 + "not measuring anything. Observed: \(server.requestedPaths)"
+        )
+        XCTAssertTrue(
+            controlDottedBlocked,
+            "A filter containing a dot did not block through WKContentRuleListStore either, so "
+                + "the dot — not the extension runtime — could explain the DNR result, and the "
+                + "measurement below must not be read as a WebKit defect. "
+                + "Observed: \(server.requestedPaths)"
         )
 
         // ---- The measurement.
@@ -399,6 +421,12 @@ final class WebExtensionNetworkEnforcementTests: XCTestCase {
             "A static declarativeNetRequest block rule did not stop the request \(Int(Self.compilationGrace))s "
                 + "after the extension reported its ruleset enabled, while a hand-compiled rule list "
                 + "on the same server did block. Observed: \(server.requestedPaths)"
+        )
+        XCTAssertTrue(
+            lateBareBlocked,
+            "A static declarativeNetRequest rule whose urlFilter is form-identical to the control "
+                + "that did block (\"blocked-nodot\", no dot) still did not stop the request. "
+                + "Observed: \(server.requestedPaths)"
         )
         XCTAssertTrue(
             lateDynamicBlocked,

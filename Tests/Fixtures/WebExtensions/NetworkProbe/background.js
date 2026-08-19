@@ -43,9 +43,14 @@
     let attempts = 0;
     const timer = setInterval(async () => {
       attempts += 1;
-      if (attempts > 25) {
+      // Report the negative once inside the test's own lifetime; a poll that only speaks at the
+      // very end would still be running when the assertions are made, and silence would then be
+      // mistaken for a result.
+      if (attempts === 8) {
+        signal({ phase: "matched", state: "none-after-8-polls" });
+      }
+      if (attempts > 40) {
         clearInterval(timer);
-        signal({ phase: "matched", state: "none-after-25-polls" });
         return;
       }
       try {

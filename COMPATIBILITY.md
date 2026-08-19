@@ -103,18 +103,35 @@ Hai lần chạy CI liên tiếp với **cùng một fixture không đổi một
 | `32222870118` | `4c45c2a8-25cc-4872-89db-55d7618314bb` |
 | `32223595806` | `1dbcf887-ecaf-4c36-a5e5-35c8faaeb7a4` |
 
-Đây là UUID do runtime cấp cho mỗi lần cài, **không** phải id suy ra từ `key` trong manifest như Chrome.
+Đây là UUID **mặc định** do runtime cấp cho mỗi lần cài, không phải id suy ra từ `key` trong manifest
+như Chrome.
+
+Nhưng đây không phải ngõ cụt. Tài liệu Apple cho `WKWebExtensionContext.uniqueIdentifier`:
+
+```swift
+var uniqueIdentifier: String { get set }
+```
+
+> The default value is a unique value that matches the host in the default base URL. The identifier can
+> be any value that is unique. **Setting is only allowed when the context is not loaded.** This value is
+> accessible by the extension via `browser.runtime.id`.
+
+Nghĩa là app **phải chủ động gán** identifier ổn định của mình trước khi `controller.load(context)`.
 Hệ quả cho M4/M5:
 
-- không được dùng `runtime.id` làm khoá lưu trữ, khoá permission hay khoá đồng bộ cấu hình — cài lại là
-  mất hết;
-- app phải tự giữ một identity riêng cho mỗi extension (hash nội dung package đã có sẵn trong
-  `ExtensionKit`) và ánh xạ sang id runtime tại thời điểm nạp;
-- extension nào hard-code id của chính nó trong allowlist `externally_connectable` sẽ hỏng.
+- app tự sinh identity bền cho mỗi extension (hash nội dung package — `ExtensionKit/Installer/ExtensionIdentity.swift`
+  đã làm việc này) rồi gán vào `context.uniqueIdentifier` **trước khi load**;
+- nếu không gán, mọi thứ khoá theo `runtime.id` sẽ mất sau mỗi lần cài lại — kể cả storage của chính
+  extension;
+- gán sau khi context đã load là không có tác dụng, nên thứ tự trong installer là bắt buộc, không phải
+  tuỳ chọn.
 
-Lưu ý phạm vi: hai lần chạy này là hai container simulator sạch khác nhau, nên kết quả mới chỉ chứng
-minh **id không bền qua cài mới**. Nó chưa chứng minh id đổi khi app khởi động lại với cùng container —
-cần một probe riêng, ghi vào việc M4.
+Chưa verify bằng thực nghiệm: bản thân việc gán có thật sự làm `browser.runtime.id` đổi theo hay không.
+Đây là chữ ký lấy từ tài liệu Apple, chưa phải số đo của harness. Cần một probe riêng ở M4.
+
+Lưu ý phạm vi của phép đo: hai lần chạy trên là hai container simulator sạch khác nhau, nên nó chứng
+minh **id mặc định không bền qua cài mới**. Chưa chứng minh id đổi khi app khởi động lại với cùng
+container.
 
 ## Phát hiện quan trọng nhất: MV3 `service_worker` không khởi động
 

@@ -16,6 +16,10 @@ final class WebExtensionHarnessTests: XCTestCase {
     private var host: WebExtensionHost!
     private var tabManager: TabManager!
 
+    /// Deliberately not a UUID: if the runtime ignored the assignment and fell back to its own
+    /// default, the probe detail would still *look* like a plausible id and the test would pass.
+    private static let pinnedIdentifier = "kiwix.harness.pinned-identity"
+
     private static let harnessPageHost = "harness.kiwix.test"
     private static let harnessPageHTML = """
     <!doctype html>
@@ -150,7 +154,17 @@ final class WebExtensionHarnessTests: XCTestCase {
 
         let context = try await host.loadExtension(
             resourceBaseURL: resourceBaseURL,
-            policy: .trustFirstPartyBundle
+            policy: .trustFirstPartyBundle,
+            uniqueIdentifier: Self.pinnedIdentifier
+        )
+
+        // The default identifier is a fresh UUID per install, so anything the app keys on it is lost
+        // on reinstall. Apple documents `uniqueIdentifier` as settable while unloaded and surfaced as
+        // `browser.runtime.id`; this asserts that documented behaviour instead of trusting it.
+        XCTAssertEqual(
+            context.uniqueIdentifier,
+            Self.pinnedIdentifier,
+            "Assigning uniqueIdentifier before load did not stick."
         )
 
         // Evidence the manifest was understood, independent of anything the JavaScript reports.
@@ -217,6 +231,17 @@ final class WebExtensionHarnessTests: XCTestCase {
         XCTAssertEqual(tabsCreate?.status, .pass, "tabs.create failed: \(tabsCreate?.detail ?? "no probe")")
         let tabsQuery = report.probes.first { $0.id == "tabs.query" }
         XCTAssertEqual(tabsQuery?.status, .pass, "tabs.query failed: \(tabsQuery?.detail ?? "no probe")")
+
+        // The host-side assertion above only proves the property took the value. This proves the
+        // value actually reaches the extension as `browser.runtime.id`, which is the part that
+        // decides whether a stable install identity is possible at all (risk R-20).
+        let runtimeID = report.probes.first { $0.id == "runtime.id" }
+        XCTAssertEqual(
+            runtimeID?.detail,
+            Self.pinnedIdentifier,
+            "browser.runtime.id did not report the identifier the app assigned; a stable install "
+                + "identity is not achievable this way."
+        )
     }
 
     /// Spec §2.4 asks whether MV3 `background.service_worker` is usable. This answers it without

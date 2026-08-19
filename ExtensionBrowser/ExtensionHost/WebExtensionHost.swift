@@ -67,13 +67,24 @@ final class WebExtensionHost: NSObject {
 
     // MARK: - Extension lifecycle
 
+    /// - Parameter uniqueIdentifier: the app's own stable identity for this extension. The default
+    ///   `uniqueIdentifier` is a fresh UUID per install — two CI runs of a byte-identical fixture got
+    ///   different ids — and it is what the extension sees as `browser.runtime.id`. Anything keyed on
+    ///   the default is lost on reinstall, so the installer must supply its own. Apple documents the
+    ///   property as settable only while the context is unloaded, which is why this is assigned here
+    ///   and not exposed as a mutable knob afterwards.
     @discardableResult
     func loadExtension(
         resourceBaseURL: URL,
-        policy: WebExtensionPermissionPolicy
+        policy: WebExtensionPermissionPolicy,
+        uniqueIdentifier: String? = nil
     ) async throws -> WKWebExtensionContext {
         let webExtension = try await WKWebExtension(resourceBaseURL: resourceBaseURL)
         let context = WKWebExtensionContext(for: webExtension)
+
+        if let uniqueIdentifier {
+            context.uniqueIdentifier = uniqueIdentifier
+        }
 
         #if DEBUG
         context.isInspectable = true

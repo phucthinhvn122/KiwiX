@@ -180,6 +180,7 @@ chính bảng kết quả chứ không bị bỏ qua im lặng.
 | DNR phải xác nhận request bị block bằng quan sát thật | `declarativeNetRequest.enforcement` = `skipped` | Trang harness do `loadSimulatedRequest` phục vụ, không có origin subresource nào dự án kiểm soát. Một host `.test` sẽ fail DNS, nên kết quả "bị block" không phân biệt được với "không phân giải được tên". Cần test server nội bộ — đẩy sang M3. |
 | Probe popup phải kiểm tra nội dung render | Chưa có | `presentActionPopup` hiện trả `actionPopupUnsupported`; UI popup là phạm vi M3. |
 | Fixture MV2 riêng cho probe cần persistent background | Chưa có | M2 chỉ cần trả lời MV3 + service worker. Sẽ thêm khi có probe thật sự cần persistent background. |
+| Trang của chính extension mở được trong tab | **Chưa làm** | Apple nói rõ với `WKWebExtensionContext.webViewConfiguration`: *"The app must use this configuration when initializing web views intended to navigate to a URL originating from this extension's base URL. The app must also swap web views in tabs when navigating to and from web extension URLs."* Hiện `WebViewConfigurationProvider` không đụng tới nó ở bất kỳ đâu, nên điều hướng tới `webkit-extension://…` sẽ hỏng. Ảnh hưởng options page, popup mở dạng tab và override new tab page — tất cả đều là M3. |
 
 `webRequest.onBeforeRequest.register` cố tình chỉ đạt `available`: đăng ký listener thành công không
 chứng minh có traffic đi qua nó. Riêng `webRequest.blocking.accepted` là probe thật vì việc runtime có

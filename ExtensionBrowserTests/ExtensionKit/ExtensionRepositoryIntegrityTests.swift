@@ -149,7 +149,8 @@ final class ExtensionRepositoryIntegrityTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? ExtensionInstallError, .tooManyInstalledExtensions(limit: 2))
         }
-        XCTAssertEqual(try await repository.installedExtensions().count, 2)
+        let installed = try await repository.installedExtensions()
+        XCTAssertEqual(installed.count, 2)
     }
 
     func testRepositoryScanFailsClosedWhenDirectoryInspectionIsTruncated() async throws {

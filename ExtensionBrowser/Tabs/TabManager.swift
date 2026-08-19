@@ -35,6 +35,10 @@ final class TabManager {
     static let defaultMaximumTabCount = SafePersistence.maximumTabCount
     weak var delegate: TabManagerDelegate?
 
+    /// Outbound port to the WebExtension host (M2). Nil until a host attaches, and nil in every
+    /// unit test that does not exercise extensions.
+    weak var webExtensionObserver: TabWebExtensionObserving?
+
     private(set) var tabs: [Tab] = []
     private(set) var selectedTabID: UUID?
     private(set) var hasRestoredSession = false
@@ -110,6 +114,15 @@ final class TabManager {
             activate(restoredSelection)
         }
 
+        // Restored tabs bypass `createTab`, so they have to be announced here or the extension
+        // runtime starts with an empty window (ADR-004).
+        for tab in tabs where !tab.isPrivate {
+            webExtensionObserver?.tabManager(self, didOpenTab: tab)
+        }
+        if let restoredSelection, !restoredSelection.isPrivate {
+            webExtensionObserver?.tabManager(self, didActivateTab: restoredSelection, previousTabID: nil)
+        }
+
         delegate?.tabManagerDidChangeTabs(self)
         if let selectedTab {
             delegate?.tabManager(self, didSelect: selectedTab)
@@ -138,6 +151,8 @@ final class TabManager {
         }
         let tab = Tab(url: url, isPrivate: isPrivate)
         tabs.append(tab)
+        // A tab must be announced as open before it can be activated (ADR-004).
+        webExtensionObserver?.tabManager(self, didOpenTab: tab)
 
         if select {
             selectTab(id: tab.id)
@@ -155,6 +170,11 @@ final class TabManager {
         let wasSelected = selectedTabID == id
 
         tabs.remove(at: index)
+        webExtensionObserver?.tabManager(
+            self,
+            didCloseTabWithID: closingTab.id,
+            isPrivate: closingTab.isPrivate
+        )
         if wasSelected {
             selectedTabID = nil
             if tabs.isEmpty {
@@ -186,6 +206,7 @@ final class TabManager {
         guard let tab = tab(id: id) else { return }
         PerformanceProfiler.event("Tab Switch")
 
+        let previousTabID = selectedTabID
         if let previous = selectedTab, previous.id != id {
             previous.state = previous.webView == nil ? .suspended : .warm
             delegate?.tabManager(self, didUpdate: previous)
@@ -194,6 +215,9 @@ final class TabManager {
         selectedTabID = id
         tab.lastAccessDate = Date()
         activate(tab)
+        if previousTabID != id {
+            webExtensionObserver?.tabManager(self, didActivateTab: tab, previousTabID: previousTabID)
+        }
         delegate?.tabManager(self, didSelect: tab)
         delegate?.tabManagerDidChangeTabs(self)
         scheduleLifecycleRebalance()
@@ -207,9 +231,12 @@ final class TabManager {
             return
         }
 
+        // Extensions never see private tabs, so the index they knew is the private-excluded one.
+        let previousVisibleIndex = tabs.prefix(sourceIndex).filter { !$0.isPrivate }.count
         let tab = tabs.remove(at: sourceIndex)
         let adjustedDestination = min(destinationIndex, tabs.count)
         tabs.insert(tab, at: adjustedDestination)
+        webExtensionObserver?.tabManager(self, didMoveTab: tab, fromIndex: previousVisibleIndex)
         delegate?.tabManagerDidChangeTabs(self)
         schedulePersistence()
     }
@@ -238,6 +265,7 @@ final class TabManager {
         tab.needsInitialNavigation = false
         tab.updateFaviconCandidate()
         delegate?.tabManager(self, didUpdate: tab)
+        webExtensionObserver?.tabManager(self, didChange: [.title, .url, .loading], for: tab)
 
         if url.absoluteString == "about:blank" {
             tab.webView?.loadHTMLString("", baseURL: nil)
@@ -254,18 +282,25 @@ final class TabManager {
 
     func updateTab(id: UUID, title: String? = nil, url: URL? = nil) {
         guard let tab = tab(id: id) else { return }
+        var change: TabObservedChange = []
         if let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            tab.title = SafePersistence.title(title)
+            let normalized = SafePersistence.title(title)
+            if tab.title != normalized { change.insert(.title) }
+            tab.title = normalized
         }
         if let url {
             if tab.url != url {
                 tab.favicon = nil
+                change.insert(.url)
             }
             tab.url = url
             tab.updateFaviconCandidate()
         }
         tab.lastAccessDate = Date()
         delegate?.tabManager(self, didUpdate: tab)
+        if !change.isEmpty {
+            webExtensionObserver?.tabManager(self, didChange: change, for: tab)
+        }
         schedulePersistence()
     }
 
@@ -328,6 +363,15 @@ final class TabManager {
         ensureWebView(for: tab)
         tab.state = .active
         tab.isRestoringFromSuspension = wasSuspended && tab.snapshot != nil
+    }
+
+    /// Forces a tab's web view into existence. Extensions can target a suspended tab, and a
+    /// content script has nowhere to run without one.
+    @discardableResult
+    func materializeWebView(for tabID: UUID) -> WKWebView? {
+        guard let tab = tab(id: tabID) else { return nil }
+        ensureWebView(for: tab)
+        return tab.webView
     }
 
     private func ensureWebView(for tab: Tab) {

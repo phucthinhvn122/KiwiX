@@ -1,0 +1,98 @@
+import Foundation
+
+/// Receives the API harness report over whichever transport survives on the device.
+///
+/// Two transports are supported on purpose, because *whether they work at all* is part of what
+/// M2 has to measure:
+///   1. `runtime.sendNativeMessage` → `WKWebExtensionControllerDelegate`
+///   2. a chunked `tabs.create` beacon to `harnessBeaconHost`, intercepted before a real tab is
+///      created
+///
+/// The channel is inert unless a test explicitly enables it, so a third-party extension in a
+/// shipping build can never drive it.
+@MainActor
+final class WebExtensionHarnessChannel {
+    static let beaconHost = "kiwix-harness.invalid"
+    static let nativeApplicationIdentifier = "com.phucthinhvn122.KiwiX.harness"
+
+    private(set) var isEnabled = false
+    private var chunks: [Int: String] = [:]
+    private var expectedChunkCount: Int?
+    private(set) var report: WebExtensionProbeReport?
+    var onReport: ((WebExtensionProbeReport) -> Void)?
+
+    func enable() {
+        isEnabled = true
+    }
+
+    func reset() {
+        chunks.removeAll()
+        expectedChunkCount = nil
+        report = nil
+    }
+
+    /// - Returns: `true` when the message was a harness report and has been consumed.
+    func ingestNativeMessage(_ message: Any) -> Bool {
+        guard isEnabled else { return false }
+        guard JSONSerialization.isValidJSONObject(message),
+              let data = try? JSONSerialization.data(withJSONObject: message),
+              var decoded = try? JSONDecoder().decode(WebExtensionProbeReport.self, from: data) else {
+            return false
+        }
+        decoded.channel = "native"
+        deliver(decoded)
+        return true
+    }
+
+    /// - Returns: `true` when the URL was a harness beacon and must not open a real tab.
+    func ingestBeacon(url: URL) -> Bool {
+        guard isEnabled, url.host?.lowercased() == Self.beaconHost else { return false }
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let items = components.queryItems,
+              let indexText = items.first(where: { $0.name == "i" })?.value,
+              let index = Int(indexText),
+              let totalText = items.first(where: { $0.name == "n" })?.value,
+              let total = Int(totalText),
+              let payload = items.first(where: { $0.name == "d" })?.value,
+              index >= 0, total > 0, index < total else {
+            // Still a harness URL: swallow it rather than opening a tab.
+            return true
+        }
+
+        expectedChunkCount = total
+        chunks[index] = payload
+        guard chunks.count == total else { return true }
+
+        var joined = ""
+        for position in 0..<total {
+            guard let chunk = chunks[position] else { return true }
+            joined += chunk
+        }
+
+        guard let data = Self.decodeBase64URL(joined),
+              var decoded = try? JSONDecoder().decode(WebExtensionProbeReport.self, from: data) else {
+            return true
+        }
+
+        decoded.channel = "urlBeacon"
+        deliver(decoded)
+        return true
+    }
+
+    private func deliver(_ report: WebExtensionProbeReport) {
+        guard self.report == nil else { return }
+        self.report = report
+        onReport?(report)
+    }
+
+    static func decodeBase64URL(_ value: String) -> Data? {
+        var normalized = value
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let remainder = normalized.count % 4
+        if remainder > 0 {
+            normalized.append(String(repeating: "=", count: 4 - remainder))
+        }
+        return Data(base64Encoded: normalized)
+    }
+}

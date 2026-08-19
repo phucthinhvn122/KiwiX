@@ -93,6 +93,11 @@ targets:
     sources:
       - path: ExtensionBrowserTests
       - path: Benchmarks
+      # Copied verbatim so an extension keeps its on-disk layout; WKWebExtension needs a real
+      # directory with a manifest at its root.
+      - path: Tests/Fixtures
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: ExtensionBrowser
     settings:

@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "KiwiX API Harness",
+  "version": "1.0",
+  "description": "Measures which WebExtension APIs WKWebExtension actually implements on this device.",
+  "background": {
+    "scripts": ["probe.js", "background.js"],
+    "persistent": false
+  },
+  "action": {
+    "default_title": "Harness"
+  },
+  "permissions": [
+    "activeTab",
+    "alarms",
+    "clipboardWrite",
+    "contextMenus",
+    "cookies",
+    "declarativeNetRequest",
+    "declarativeNetRequestFeedback",
+    "menus",
+    "nativeMessaging",
+    "scripting",
+    "storage",
+    "tabs",
+    "unlimitedStorage",
+    "webNavigation",
+    "webRequest"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["https://harness.kiwix.test/*"],
+      "js": ["content.js"],
+      "run_at": "document_end",
+      "all_frames": false
+    }
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "harness-static",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  }
+}

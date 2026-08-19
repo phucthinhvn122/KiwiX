@@ -9,6 +9,10 @@ final class WebViewConfigurationProvider {
     private var privateDataStore = WKWebsiteDataStore.nonPersistent()
     private let extensionBridge: BrowserExtensionBridge
 
+    /// Assigned after construction: the host needs a `TabManager`, which needs the factory that
+    /// owns this provider, so the cycle has to be closed by the scene rather than by an init.
+    weak var webExtensionHost: WebExtensionHost?
+
     init(extensionBridge: BrowserExtensionBridge? = nil) {
         self.extensionBridge = extensionBridge ?? .shared
     }
@@ -26,6 +30,11 @@ final class WebViewConfigurationProvider {
         configuration.userContentController = contentController
 
         if !isPrivate {
+            // Spec §7: extensions are off in private browsing, so the controller is attached to
+            // normal tabs only. `WKWebViewConfiguration` is copied when the web view is created,
+            // which is why this cannot be set later.
+            configuration.webExtensionController = webExtensionHost?.controller
+
             extensionBridge.integration?.configure(
                 userContentController: contentController,
                 context: BrowserExtensionTabContext(tabID: tabID, isPrivate: false)

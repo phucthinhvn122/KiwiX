@@ -80,20 +80,31 @@ harness, lưu kết quả máy đọc được và có bằng chứng OS/device.
 
 ### 4.1 Ma trận hiện tại
 
-| Nhóm API | Simulator iOS 18.4+ | Thiết bị iOS 18.4+ | Kết luận hiện tại |
-|---|---:|---:|---|
-| `runtime` | CHƯA CHẠY | CHƯA CHẠY | Chưa kết luận |
-| `storage.local` | CHƯA CHẠY | CHƯA CHẠY | Chưa kết luận |
-| `storage.sync` | CHƯA CHẠY | CHƯA CHẠY | Chưa kết luận |
-| `tabs` | CHƯA CHẠY | CHƯA CHẠY | Chưa kết luận |
-| `scripting` | CHƯA CHẠY | CHƯA CHẠY | Chưa kết luận |
-| `action` / popup / badge | CHƯA CHẠY | CHƯA CHẠY | Chưa kết luận |
-| `i18n` | CHƯA CHẠY | CHƯA CHẠY | Chưa kết luận |
-| `declarativeNetRequest` | CHƯA CHẠY | CHƯA CHẠY | Chưa kết luận |
-| `webRequest` quan sát | CHƯA CHẠY | CHƯA CHẠY | Chưa kết luận |
-| `webRequest` blocking | CHƯA CHẠY | CHƯA CHẠY | Chưa kết luận |
-| `notifications` | CHƯA CHẠY | CHƯA CHẠY | Chưa kết luận |
-| `nativeMessaging`, `debugger`, `proxy`, `devtools_*` | CHƯA CHẠY | CHƯA CHẠY | Chưa kết luận |
+Nguồn: harness tự viết chạy trong runtime thật, CI run `32223595806` (xanh, 143 test, 0 failure).
+**Simulator iOS 18.5** — runner chỉ có 18.5, nên cột dưới đây chưa chứng minh gì trên đúng 18.4.
+Bảng probe đầy đủ 90 dòng nằm ở `COMPATIBILITY.md`.
+
+| Nhóm API | Simulator (18.5) | Thiết bị iOS 18.4+ | Kết luận hiện tại |
+|---|---|---:|---|
+| `runtime` | PASS | CHƯA CHẠY | Đủ dùng. `getPlatformInfo.os` = `ios`; URL scheme là `webkit-extension://`; id là UUID do runtime cấp |
+| `storage.local` | PASS | CHƯA CHẠY | Round-trip set/get/remove |
+| `storage.sync` | PASS (API) | CHƯA CHẠY | API chạy, **ngữ nghĩa đồng bộ chưa chứng minh** — cần thiết bị thật |
+| `tabs` | PASS | CHƯA CHẠY | create/query/get/activate/remove xuyên adapter thật; 4 event thật sự nổ |
+| `scripting` | PASS | CHƯA CHẠY | `executeScript` + `insertCSS` vào tab thật |
+| `action` / popup / badge | MỘT PHẦN | CHƯA CHẠY | `setBadgeText`/`setTitle` pass, delegate `didUpdateAction` nổ. **Popup chưa đo** — `presentActionPopup` hiện app tự từ chối, là phạm vi M3 |
+| `i18n` | MỘT PHẦN | CHƯA CHẠY | Mới đo `getUILanguage` = `en-US` |
+| `declarativeNetRequest` | MỘT PHẦN | CHƯA CHẠY | Static ruleset nạp được, dynamic rules thêm/đọc được. `getAvailableStaticRuleCount` không tồn tại. **Chặn thật chưa đo** (cần test server, M3) |
+| `webRequest` quan sát | AVAILABLE | CHƯA CHẠY | Đăng ký listener được, **chưa chứng minh có traffic đi qua**. Không tính là pass |
+| `webRequest` blocking | AVAILABLE | CHƯA CHẠY | `extraInfoSpec: ["blocking"]` được chấp nhận lúc đăng ký. Chấp nhận ≠ chặn được; `filterResponseData` không tồn tại |
+| `notifications` | KHÔNG CÓ | — | Namespace vắng mặt, `notifications.create` là `undefined` |
+| `nativeMessaging` | PASS | CHƯA CHẠY | `sendNativeMessage` tới được `WKWebExtensionControllerDelegate` — đây là transport của chính harness |
+| `debugger`, `proxy`, `devtools_*` | KHÔNG CÓ | — | Cả ba đều vắng mặt |
+
+Ngoài bảng trên, một kết quả không thuộc nhóm API nào nhưng quan trọng hơn tất cả:
+**MV3 `background.service_worker` được chấp nhận không lỗi, `hasBackgroundContent` trả `true`, nhưng
+background content không bao giờ khởi động** (`loadBackgroundContent` không gọi completion handler
+trong 15s). Bắt buộc dùng `background.scripts` + `persistent: false`. Chi tiết và hệ quả ở
+`COMPATIBILITY.md`; rủi ro tương thích ở `RISKS.md`.
 
 ### 4.2 Contract của harness
 
@@ -124,8 +135,8 @@ Quyết định triển khai là: M0 dựng CI/Xcode toolchain trước; M1 gi�
 `WKWebExtension` và chạy harness. Đây là dependency kỹ thuật, không phải miễn trừ kiểm chứng. M2 không
 được hoàn thành nếu thiếu report simulator; compatibility v1 không được ký nếu thiếu report thiết bị.
 
-Các lệnh dưới đây là Definition of Done cho harness, **chưa chạy được trong trạng thái repository hiện
-tại**:
+Các lệnh dưới đây là Definition of Done cho harness. **Đã chạy xanh ở M2** (CI run `32223595806`),
+nhưng trên simulator 18.5 chứ không phải 18.4:
 
 ```bash
 xcodegen generate --spec project.yml
@@ -141,7 +152,7 @@ Kết quả kỳ vọng:
 
 - build/test xanh;
 - `build/WebExtensionHarness.xcresult` chứa JSON report;
-- không còn ô `CHƯA CHẠY` cho cột simulator;
+- không còn ô `CHƯA CHẠY` cho cột simulator (đạt ở M2);
 - job fail nếu report thiếu probe, crash, timeout hoặc ghi `pass` mà không có assertion hành vi.
 
 Sau đó chạy cùng harness trên thiết bị iOS 18.4+ đã provisioning. Chỉ cập nhật cột thiết bị khi report

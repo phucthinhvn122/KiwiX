@@ -66,6 +66,9 @@ xcodebuild test \
   -only-testing:ExtensionBrowserTests/WebExtensionHarnessTests
 ```
 
+Lưu ý: runner CI (macos-15 + Xcode 16.4) **không có runtime 18.4**, chỉ có 18.5. Mọi số đo bên dưới là
+18.5. Muốn đo đúng deployment floor mà `project.yml` khai báo thì phải cài thêm runtime 18.4 — chưa làm.
+
 ## Cách kiểm chứng
 
 ### 1. Bảng pass/fail lên console (DoD của M2)
@@ -108,7 +111,7 @@ Test assert `host.delegateCalls.called("openNewTabUsing")`. Nếu chữ ký dele
 kèm danh sách callback đã nổ:
 
 ```
-Delegate callbacks observed: focusedWindowFor=1 openNewTabUsing=2 openWindowsFor=1 promptForPermissions=1
+Delegate callbacks observed: didUpdateAction=1 focusedWindowFor=1 openNewTabUsing=1 openWindowsFor=1 sendMessage=2
 ```
 
 ### 5. Ràng buộc §7 vẫn đứng
@@ -127,8 +130,45 @@ grep -B4 "webExtensionController = webExtensionHost" ExtensionBrowser/BrowserCor
 
 ## Kết quả đo
 
-> Điền từ lần chạy CI xanh gần nhất. Xem `COMPATIBILITY.md` cho bảng đầy đủ và `DECISIONS.md` §4.1
-> cho kết luận theo nhóm API.
+CI run `32223595806`: `** TEST SUCCEEDED **`, 143 test, 0 failure, 19.6s. Dòng marker:
+
+```
+KIWIX_HARNESS_REPORT channel=native total=90 pass=42 fail=0 timeout=0 available=18 unsupported=26 skipped=4
+```
+
+`channel=native` nghĩa là `runtime.sendNativeMessage` tới được delegate — transport dự phòng không cần
+dùng tới. Runtime chạy trên **iOS 18.5** simulator (`arm64`, `isSimulator=true`), MV3, và cả `browser`
+lẫn `chrome` đều tồn tại làm global.
+
+Delegate thật sự bị runtime gọi ngược: `didUpdateAction=1 focusedWindowFor=1 openNewTabUsing=1
+openWindowsFor=1 sendMessage=2`. Đây là bằng chứng chữ ký delegate đúng — với một protocol toàn method
+optional thì đây là cách duy nhất biết được, vì sai chữ ký chỉ làm callback im lặng chứ không lỗi build.
+
+Bốn kết quả đáng chú ý hơn con số tổng:
+
+1. **MV3 `background.service_worker` không khởi động.** Manifest được chấp nhận, `errors=[]`,
+   `hasBackgroundContent=true`, nhưng `loadBackgroundContent` không bao giờ gọi completion handler
+   trong 15s. Không lỗi, chỉ im lặng. Bắt buộc dùng `background.scripts` + `persistent:false`. Phần
+   lớn extension MV3 trên Chrome Web Store dùng `service_worker`, nên đây là rủi ro tương thích lớn
+   nhất của v1 — đã ghi thành R-18 trong `RISKS.md`.
+2. **Tab adapter chạy hết vòng.** `tabs.create/query/get/activate/remove` đều pass qua adapter thật, và
+   bốn event `onCreated/onUpdated/onActivated/onRemoved` **thật sự nổ** chứ không chỉ đăng ký được.
+   `tabs.activate` chuyển sang tab khác rồi quay lại, browser báo đúng cả hai lần. §5 gọi đây là phần
+   rủi ro nhất, và nó đứng vững.
+3. **`webRequest` blocking chấp nhận `extraInfoSpec` nhưng không chứng minh thêm được gì.** Ghi
+   `available`, không phải `pass`. Tương tự, `declarativeNetRequest` nạp được static ruleset và dynamic
+   rules nhưng **chặn thật chưa đo** — cần test server nội bộ, đẩy sang M3.
+4. **Không có dòng `fail` nào.** Lần chạy trước có 1 fail ở `webNavigation.getAllFrames`, truy ra là
+   probe của chính harness truyền `tabId: -1` (`TAB_ID_NONE`) và bị runtime từ chối đúng. Sửa xong thì
+   pass. Nói ra vì báo cáo một lỗi của mình như giới hạn của WebKit thì tệ hơn là không đo.
+5. **`runtime.id` đổi giữa hai lần cài.** Cùng một fixture không đổi một byte, hai lần chạy CI trả về
+   hai UUID khác nhau. Runtime cấp id mỗi lần cài chứ không suy ra từ `key` như Chrome, nên M4/M5
+   không được dùng `runtime.id` làm khoá lưu trữ hay khoá permission. Chi tiết ở `COMPATIBILITY.md`.
+6. **26 namespace không tồn tại**, trong đó có `notifications`, `debugger`, `proxy`, `devtools`,
+   `userScripts`, `webRequest.filterResponseData`, `commands`, `sidePanel`, `management`, `identity`.
+
+Bảng 90 dòng và phân tích theo nhóm nằm ở `COMPATIBILITY.md`; kết luận rút gọn đã thay thế toàn bộ ô
+`CHƯA CHẠY` ở cột simulator trong `DECISIONS.md` §4.1. Cột thiết bị vẫn `CHƯA CHẠY`.
 
 ## Khoảng trống đã ghi nhận, không che
 
@@ -153,7 +193,7 @@ chấp nhận `extraInfoSpec` `"blocking"` hay không trả lời được mà k
 | Load được một extension đóng gói sẵn | Xong |
 | Tab adapter tối thiểu | Xong — create/query/get/activate/close đi xuyên adapter thật |
 | Harness chạy, in bảng pass/fail lên console | Xong |
-| Build xanh | Xem mục Bằng chứng CI |
+| Build xanh | Xong — CI run `32223595806`, 143 test, 0 failure (xem mục Kết quả đo) |
 
 ## Cảnh báo về giá trị của kết quả
 

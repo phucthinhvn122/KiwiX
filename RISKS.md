@@ -1,6 +1,6 @@
 # KiwiX risk register
 
-Updated: 2026-08-18. Probability (P) and impact (I) use a 1–5 scale. “Residual” means source
+Updated: 2026-08-19. Probability (P) and impact (I) use a 1–5 scale. “Residual” means source
 mitigations exist but runtime or platform evidence is still required.
 
 | ID | Risk | P | I | Mitigation in this repository | Residual / closure evidence |
@@ -22,6 +22,9 @@ mitigations exist but runtime or platform evidence is still required.
 | R-15 | Source-only review is mistaken for a successful iOS release | 4 | 5 | Documentation explicitly marks Apple build/device gates; CI pins Xcode and action commits; private-API/ad-SDK guards | Close only with green `.xcresult`, Release archive, signed-device run, VoiceOver, memory, and network evidence |
 | R-16 | Current custom extension bridge is assumed to provide Chrome parity | 4 | 4 | Small allowlisted API surface; unknown permissions/APIs fail closed; architecture names unsupported areas | Publish compatibility results per OS/device; future `WKWebExtension` migration is a separate decision, not implemented evidence |
 | R-17 | Distribution violates platform/store policy or signing expectations | 3 | 5 | Unsigned/signed artifacts are labelled separately; no App Store compatibility claim | Product/legal review and valid signing/provisioning are required before distribution outside development |
+| R-18 | Most Chrome MV3 extensions ship `background.service_worker`, which loads silently and never runs | 5 | 5 | Measured in M2, not assumed: `WKWebExtension` accepts such a manifest with `errors == []` and `hasBackgroundContent == true`, yet `loadBackgroundContent` never calls back. `loadBackgroundContent(for:timeout:)` turns that silence into a reportable error instead of a hang; `COMPATIBILITY.md` records it | The M4 installer must detect this before reporting a successful install — a user who sees “installed” for a dead extension is worse off than one who sees a refusal. No repackaging shim exists; whether one is viable is unproven |
+| R-19 | Simulator 18.5 results are read as iOS 18.4 device results | 4 | 4 | Host, not JavaScript, stamps `osVersion`/`isSimulator` into every report; `DECISIONS.md` §4.1 keeps the device column at CHƯA CHẠY; both reports carry the warning | The CI runner offers no 18.4 runtime, so the declared deployment floor is still unmeasured. Close with one harness run on 18.4 and one on a provisioned device |
+| R-20 | Extension identity is keyed on `runtime.id`, which the runtime reassigns per install | 3 | 4 | Measured across two CI runs of a byte-identical fixture: the id changed. `ExtensionKit` already computes a content hash per package, so a stable local identity exists to key storage, permissions, and settings on | Nothing yet maps that hash to the runtime id at load time, and it is unproven whether the id also changes across app restarts within one container — needs its own probe before M4 persists anything |
 
 ## Stop-ship conditions
 

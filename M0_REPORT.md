@@ -21,6 +21,9 @@ Ngày: 2026-08-17
 - Workflow run: <https://github.com/phucthinhvn122/KiwiX/actions/runs/31997160982>, attempt 2.
 - Kết quả: pass trong 7 phút 5 giây.
 - Toolchain: Xcode 26.3, Swift 6.2.4; simulator iOS 26.2.
+- **Đã đổi từ M2:** `ci.yml` hiện ghim cứng `Xcode_16.4` và runner chỉ có simulator iOS 18.5.
+  Dòng trên là toolchain của đúng run `31997160982`, không phải của CI hiện tại. Ghim là cố ý —
+  chọn "Xcode mới nhất trên runner" khiến kết quả đổi theo image của GitHub, không tái tạo được.
 - Các bước pass:
   - generate Xcode project;
   - unit tests;

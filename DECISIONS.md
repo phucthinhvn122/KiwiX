@@ -8,6 +8,11 @@ Tài liệu này là cổng quyết định bắt buộc trước khi sửa runt
 
 ## 1. Baseline của repository
 
+> **Ảnh chụp lúc ra quyết định (trước M0), giữ nguyên để đối chiếu — không phải trạng thái hôm nay.**
+> Tính đến M2: deployment target đã là 18.4 (`project.yml`), `WKWebExtension`/`WKWebExtensionContext`/
+> `WKWebExtensionController` đã có và chạy, repo đã có commit và remote. Còn đúng: `ExtensionKit/` tự
+> parse manifest và giả lập `chrome.*` **vẫn nằm trong production path** — dọn ở M3/M4.
+
 Repository hiện tại là PoC theo hướng cũ:
 
 - deployment target đang là iOS 17.0;

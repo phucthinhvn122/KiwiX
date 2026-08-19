@@ -88,9 +88,14 @@ final class WebExtensionTabPolicyTests: XCTestCase {
         XCTAssertTrue(limiter.allow(context: context, now: start.addingTimeInterval(1)))
         XCTAssertFalse(limiter.allow(context: context, now: start.addingTimeInterval(2)))
 
-        // The first event has aged out; exactly one slot is back.
-        XCTAssertTrue(limiter.allow(context: context, now: start.addingTimeInterval(61)))
-        XCTAssertFalse(limiter.allow(context: context, now: start.addingTimeInterval(61.5)))
+        // Sliding window, not a fixed bucket: at t+30 both events are still inside the 60s
+        // window, so nothing has recovered.
+        XCTAssertFalse(limiter.allow(context: context, now: start.addingTimeInterval(30)))
+
+        // At t+60.5 the event at t+0 is 60.5s old and gone, but the one at t+1 is only 59.5s old
+        // and still counts, so exactly one slot is back — and using it refills the budget.
+        XCTAssertTrue(limiter.allow(context: context, now: start.addingTimeInterval(60.5)))
+        XCTAssertFalse(limiter.allow(context: context, now: start.addingTimeInterval(60.6)))
     }
 
     func testBudgetIsPerExtensionNotGlobal() {

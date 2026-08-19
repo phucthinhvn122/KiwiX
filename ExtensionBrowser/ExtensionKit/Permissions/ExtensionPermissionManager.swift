@@ -62,7 +62,7 @@ public actor ExtensionPermissionManager {
         let hostPatterns = grantedPatterns.filter { grant in
             declaredProgrammaticPatterns.contains(where: { $0.encompasses(grant) })
         }
-        let contentScriptHostRules = try manifest.contentScripts.map { script in
+        let contentScriptHostRules = try manifest.contentScripts.map { script -> ContentScriptHostRule in
             let declaredIncludes = try script.matches.map(WebExtensionMatchPattern.init)
             let effectiveIncludes = grantedPatterns.flatMap { grant in
                 declaredIncludes.compactMap { declared -> WebExtensionMatchPattern? in
@@ -71,7 +71,7 @@ public actor ExtensionPermissionManager {
                     return nil
                 }
             }
-            ContentScriptHostRule(
+            return ContentScriptHostRule(
                 includes: Array(Set(effectiveIncludes)),
                 excludes: try script.excludeMatches.map(WebExtensionMatchPattern.init)
             )

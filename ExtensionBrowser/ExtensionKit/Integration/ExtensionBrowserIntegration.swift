@@ -10,6 +10,7 @@ public final class ExtensionBrowserIntegration: NSObject, BrowserExtensionIntegr
         let scripts: [PreparedContentScript]
     }
 
+    @MainActor
     private final class ControllerRecord {
         weak var controller: WKUserContentController?
         let context: BrowserExtensionTabContext

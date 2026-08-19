@@ -223,10 +223,6 @@
       "network",
       "needs a controlled test server to observe a blocked request (M3)"
     );
-    await H.run("webNavigation.getAllFrames", "network", async () => {
-      const frames = await api.webNavigation.getAllFrames({ tabId: -1 });
-      return "frames=" + (frames ? frames.length : 0);
-    });
   }
 
   async function uiProbes() {
@@ -322,6 +318,11 @@
     await H.run("scripting.insertCSS", "scripting", async () => {
       await api.scripting.insertCSS({ target: { tabId: harnessTab.id }, css: "body { --kiwix: 1; }" });
       return "inserted";
+    });
+
+    await H.run("webNavigation.getAllFrames", "network", async () => {
+      const frames = await api.webNavigation.getAllFrames({ tabId: harnessTab.id });
+      return "frames=" + (frames ? frames.length : 0);
     });
 
     await H.run("tabs.activate", "tabs", async () => {

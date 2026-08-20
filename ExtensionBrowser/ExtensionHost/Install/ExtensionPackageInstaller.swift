@@ -24,7 +24,9 @@ public struct ExtensionPackageInstaller: Sendable {
     public let limits: ZIPSecurityLimits
     public let maximumInstalledExtensions: Int
 
-    public init(
+    /// Internal rather than `public`: the default limit is read from `SafePersistence`, and a
+    /// public default argument may only name public symbols. Every caller is in this module.
+    init(
         limits: ZIPSecurityLimits = .default,
         maximumInstalledExtensions: Int = SafePersistence.maximumInstalledExtensionCount
     ) {

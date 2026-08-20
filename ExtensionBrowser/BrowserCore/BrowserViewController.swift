@@ -38,6 +38,9 @@ final class BrowserViewController: UIViewController {
     private let webDialogRateLimiter = WebDialogRateLimiter()
     private let popupCreationRateLimiter = PopupCreationRateLimiter()
 
+    /// Named so a test can find the recogniser without the view hierarchy being made public.
+    static let dismissKeyboardTapName = "browser.dismissKeyboardTap"
+
     init(
         tabManager: TabManager? = nil,
         settingsStore: BrowserSettingsStore? = nil,
@@ -62,7 +65,9 @@ final class BrowserViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .systemBackground
+        // The strip the hardware takes — beside the content in landscape, under the status bar in
+        // portrait — is painted like the page canvas instead of being left as a contrasting slab.
+        view.backgroundColor = KiwiTheme.canvas
         configureInterface()
 
         tabManager.delegate = self
@@ -107,6 +112,23 @@ final class BrowserViewController: UIViewController {
         webContentContainer.translatesAutoresizingMaskIntoConstraints = false
         webContentContainer.backgroundColor = KiwiTheme.canvas
         webContentContainer.clipsToBounds = true
+        webContentContainer.accessibilityIdentifier = "browser.content"
+
+        // Tapping the page while the address bar is being edited puts the keyboard away, the way a
+        // browser is expected to behave — there is no Cancel button, because the controls row
+        // hides itself during editing.
+        //
+        // The recogniser only begins while the field is first responder (see
+        // `gestureRecognizerShouldBegin`), so nothing about an ordinary tap on a link changes. While
+        // it does begin it swallows the touch, which is deliberate: a tap meant to dismiss must not
+        // also activate whatever happened to be underneath it.
+        let dismissKeyboardTap = UITapGestureRecognizer(
+            target: self,
+            action: #selector(dismissAddressEditing)
+        )
+        dismissKeyboardTap.delegate = self
+        dismissKeyboardTap.name = Self.dismissKeyboardTapName
+        webContentContainer.addGestureRecognizer(dismissKeyboardTap)
 
         snapshotView.translatesAutoresizingMaskIntoConstraints = false
         snapshotView.contentMode = .scaleAspectFill
@@ -130,9 +152,12 @@ final class BrowserViewController: UIViewController {
         view.addSubview(progressView)
 
         NSLayoutConstraint.activate([
+            // Horizontal edges follow the safe area too, not just the top one. On a notched phone
+            // held sideways the inset is on the side, and a view pinned to the raw edge puts page
+            // content under the cut-out.
             webContentContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            webContentContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            webContentContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            webContentContainer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            webContentContainer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
 
             snapshotView.topAnchor.constraint(equalTo: webContentContainer.topAnchor),
             snapshotView.leadingAnchor.constraint(equalTo: webContentContainer.leadingAnchor),
@@ -152,8 +177,8 @@ final class BrowserViewController: UIViewController {
             errorView.trailingAnchor.constraint(equalTo: webContentContainer.trailingAnchor),
             errorView.bottomAnchor.constraint(equalTo: webContentContainer.bottomAnchor),
 
-            progressView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            progressView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            progressView.leadingAnchor.constraint(equalTo: webContentContainer.leadingAnchor),
+            progressView.trailingAnchor.constraint(equalTo: webContentContainer.trailingAnchor),
             progressView.bottomAnchor.constraint(equalTo: webContentContainer.bottomAnchor)
         ])
     }
@@ -161,6 +186,10 @@ final class BrowserViewController: UIViewController {
     private func configureToolbar() {
         toolbar.translatesAutoresizingMaskIntoConstraints = false
         toolbar.backgroundColor = .clear
+        toolbar.accessibilityIdentifier = "browser.toolbar"
+        // Left full width on purpose: the blur is meant to run under the cut-out and the home
+        // indicator. What must stay clear of both is the controls inside it, and those are pinned
+        // to `layoutMarginsGuide`, which insets itself from the safe area.
         toolbar.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 6, leading: 12, bottom: 2, trailing: 12)
 
         toolbarMaterial.translatesAutoresizingMaskIntoConstraints = false
@@ -183,6 +212,13 @@ final class BrowserViewController: UIViewController {
         addressField.layer.borderWidth = 1.5
         addressField.font = .preferredFont(forTextStyle: .body)
         addressField.adjustsFontForContentSizeCategory = true
+        // Stated, not inherited. Every background this field can wear is a KiwiTheme colour that
+        // flips with the interface style; the text colour has to flip with it or the address is
+        // drawn in a fixed shade against a surface that moved out from under it. The placeholder
+        // never showed the fault because UIKit does hand that one a dynamic default.
+        addressField.textColor = .label
+        addressField.tintColor = KiwiTheme.accentDeep
+        addressField.accessibilityIdentifier = "browser.addressField"
         addressField.isUserInteractionEnabled = true
         addressField.placeholder = "Search or enter an address"
         addressField.clearButtonMode = .whileEditing
@@ -305,6 +341,10 @@ final class BrowserViewController: UIViewController {
         if !addressField.isFirstResponder {
             addressField.becomeFirstResponder()
         }
+    }
+
+    @objc private func dismissAddressEditing() {
+        addressField.resignFirstResponder()
     }
 
     private func display(tab: Tab) {
@@ -814,6 +854,17 @@ final class BrowserViewController: UIViewController {
         }
     }
 
+}
+
+extension BrowserViewController: UIGestureRecognizerDelegate {
+    /// The tap-to-dismiss recogniser, and only while the address bar is being edited.
+    ///
+    /// Returning false is what keeps this invisible the rest of the time: a recogniser that never
+    /// begins never swallows a touch, so page interaction is exactly what it was before.
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer.name == Self.dismissKeyboardTapName else { return true }
+        return addressField.isFirstResponder
+    }
 }
 
 extension BrowserViewController: UITextFieldDelegate {

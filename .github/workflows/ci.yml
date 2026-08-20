@@ -65,6 +65,11 @@ jobs:
           set -euo pipefail
           xcrun simctl boot "${SIMULATOR_UDID}" 2>/dev/null || true
           xcrun simctl bootstatus "${SIMULATOR_UDID}" -b
+          # Dark is where the address-bar defect lived: the field's background follows the
+          # interface style and the text colour did not. The UI-test screenshots are taken in the
+          # mode that hid the bug. Light mode is covered arithmetically, on both styles, by
+          # BrowserChromeAppearanceTests.
+          xcrun simctl ui "${SIMULATOR_UDID}" appearance dark
 
       - name: Check source for private API
         run: make private-api
@@ -76,6 +81,12 @@ jobs:
         env:
           DESTINATION: platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}
         run: make test DESTINATION="${DESTINATION}" TEST_RESULT_BUNDLE_PATH="build/Tests.xcresult"
+
+      - name: Export UI-test screenshots
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 scripts/ci/export_screenshots.py             --xcresult build/Tests.xcresult             --output artifacts/screenshots
 
       - name: Build release Simulator app
         run: make build CONFIGURATION=Release DESTINATION="generic/platform=iOS Simulator" DERIVED_DATA="build/simulator"
@@ -108,6 +119,7 @@ jobs:
             artifacts/ipa/ExtensionBrowser-Unsigned.ipa
             build/Tests.xcresult
             build/Benchmarks.xcresult
+            artifacts/screenshots
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -120,5 +132,6 @@ jobs:
           path: |
             build/**/*.xcresult
             build/**/*.log
+            artifacts/screenshots
           if-no-files-found: warn
           retention-days: 7

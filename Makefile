@@ -33,8 +33,8 @@ test: generate private-api
 		-derivedDataPath "$(DERIVED_DATA)" \
 		-resultBundlePath "$(TEST_RESULT_BUNDLE_PATH)" \
 		-test-timeouts-enabled YES \
-		-default-test-execution-time-allowance 60 \
-		-maximum-test-execution-time-allowance 120 \
+		-default-test-execution-time-allowance 120 \
+		-maximum-test-execution-time-allowance 240 \
 		BUNDLE_IDENTIFIER="$(BUNDLE_IDENTIFIER)" \
 		CODE_SIGNING_ALLOWED=NO \
 		-parallel-testing-enabled NO \

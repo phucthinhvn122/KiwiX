@@ -130,6 +130,22 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/ExtensionBrowser.app/ExtensionBrowser"
         BUNDLE_LOADER: "$(TEST_HOST)"
 
+  ExtensionBrowserUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "18.4"
+    sources:
+      - path: ExtensionBrowserUITests
+    dependencies:
+      - target: ExtensionBrowser
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.ExtensionBrowserUITests
+        GENERATE_INFOPLIST_FILE: true
+        # A UI test drives the app from outside its process, so there is no TEST_HOST and no
+        # BUNDLE_LOADER here: nothing is linked against, the app is launched and tapped.
+        TEST_TARGET_NAME: ExtensionBrowser
+
 schemes:
   ExtensionBrowser:
     build:
@@ -137,10 +153,17 @@ schemes:
         ExtensionBrowser: all
         ExtensionBrowserTests:
           - test
+        ExtensionBrowserUITests:
+          - test
     test:
       gatherCoverageData: true
       targets:
         - name: ExtensionBrowserTests
+          parallelizable: false
+          randomExecutionOrder: false
+        # Ordered after the unit suite on purpose: if a unit test already explains the failure,
+        # nobody should have to read a UI test log to find that out.
+        - name: ExtensionBrowserUITests
           parallelizable: false
           randomExecutionOrder: false
     run:

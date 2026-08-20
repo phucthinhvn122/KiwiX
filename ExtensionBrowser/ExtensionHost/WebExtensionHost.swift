@@ -100,6 +100,26 @@ final class WebExtensionHost: NSObject {
         return context
     }
 
+    /// Looks up a loaded context by the identity the installer assigned it.
+    ///
+    /// No side table: `uniqueIdentifier` is set at load time and is immutable while loaded, so the
+    /// contexts themselves are the registry and cannot drift out of sync with one.
+    func loadedContext(uniqueIdentifier: String) -> WKWebExtensionContext? {
+        loadedContexts.first { $0.uniqueIdentifier == uniqueIdentifier }
+    }
+
+    /// Unloads one extension and drops everything keyed to it.
+    ///
+    /// The tab budget is forgotten as well. Identifiers survive a disable/enable cycle, and an
+    /// extension that was rate-limited before being disabled must not come back still throttled —
+    /// nor keep a stale entry alive for a context that no longer exists.
+    func unload(_ context: WKWebExtensionContext) {
+        try? controller.unload(context)
+        loadedContexts.removeAll { $0 === context }
+        policies.removeValue(forKey: ObjectIdentifier(context))
+        tabRateLimiter.forget(context: context)
+    }
+
     func unloadAll() {
         for context in loadedContexts {
             try? controller.unload(context)
@@ -140,17 +160,55 @@ final class WebExtensionHost: NSObject {
         policies[ObjectIdentifier(context)] ?? .denyAll
     }
 
+    /// Writes the install-time decision onto a fresh context, before it is loaded.
+    ///
+    /// `denyAll` denies *explicitly* instead of leaving the status alone. `.unknown` means "ask",
+    /// and there is nobody to ask outside the install sheet, so leaving it unset would make the
+    /// outcome depend on whatever the runtime decides to do with an unanswered permission.
+    ///
+    /// `allRequestedMatchPatterns` is used rather than `requestedPermissionMatchPatterns`: the
+    /// latter covers `host_permissions` only, so an extension whose host access comes from its
+    /// content-script `matches` would have been granted nothing and quietly failed to run.
     private func apply(
         policy: WebExtensionPermissionPolicy,
         to context: WKWebExtensionContext,
         for webExtension: WKWebExtension
     ) {
-        guard policy == .trustFirstPartyBundle else { return }
-        for permission in webExtension.requestedPermissions {
-            context.setPermissionStatus(.grantedExplicitly, for: permission)
-        }
-        for pattern in webExtension.requestedPermissionMatchPatterns {
-            context.setPermissionStatus(.grantedExplicitly, for: pattern)
+        // Optional permissions are included so a decision is recorded for everything the extension
+        // could ever ask for, not just what it asks for at install time.
+        let everyPermission = webExtension.requestedPermissions
+            .union(webExtension.optionalPermissions)
+        let everyPattern = webExtension.allRequestedMatchPatterns
+            .union(webExtension.optionalPermissionMatchPatterns)
+
+        switch policy {
+        case .denyAll:
+            for permission in everyPermission {
+                context.setPermissionStatus(.deniedExplicitly, for: permission)
+            }
+            for pattern in everyPattern {
+                context.setPermissionStatus(.deniedExplicitly, for: pattern)
+            }
+
+        case .trustFirstPartyBundle:
+            // Only what the manifest actually requests. Optional permissions stay unanswered even
+            // here — a first-party bundle that wants one can go through the same runtime path.
+            for permission in webExtension.requestedPermissions {
+                context.setPermissionStatus(.grantedExplicitly, for: permission)
+            }
+            for pattern in webExtension.allRequestedMatchPatterns {
+                context.setPermissionStatus(.grantedExplicitly, for: pattern)
+            }
+
+        case .userGranted(let permissions, let matchPatterns):
+            for permission in everyPermission {
+                let granted = permissions.contains(permission.rawValue)
+                context.setPermissionStatus(granted ? .grantedExplicitly : .deniedExplicitly, for: permission)
+            }
+            for pattern in everyPattern {
+                let granted = matchPatterns.contains(pattern.string)
+                context.setPermissionStatus(granted ? .grantedExplicitly : .deniedExplicitly, for: pattern)
+            }
         }
     }
 

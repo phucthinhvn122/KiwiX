@@ -36,6 +36,12 @@ public enum ExtensionInstallError: LocalizedError, Equatable, Sendable {
     case packageAlreadyInstalled(String)
     case identifierCollision(String)
     case cancelled
+    case packageFormatUnsupported
+    case crxVersionUnsupported(UInt32)
+    case crxHeaderInvalid(CRXHeaderProblem)
+    case crxSignatureInvalid
+    case crxIdentifierMismatch
+    case manifestNotFound
 
     public var errorDescription: String? {
         switch self {
@@ -73,6 +79,18 @@ public enum ExtensionInstallError: LocalizedError, Equatable, Sendable {
             return "A different package already uses extension identifier \(identifier)."
         case .cancelled:
             return "Extension import was cancelled."
+        case .packageFormatUnsupported:
+            return "This file is neither a ZIP archive nor a CRX extension package."
+        case .crxVersionUnsupported(let version):
+            return "CRX format version \(version) is not supported. Only CRX3 packages can be installed."
+        case .crxHeaderInvalid(let problem):
+            return "The CRX package header is not valid (\(problem.rawValue))."
+        case .crxSignatureInvalid:
+            return "The CRX signature does not match the package contents. It may have been modified."
+        case .crxIdentifierMismatch:
+            return "The CRX package is signed by a key that does not match the identifier it declares."
+        case .manifestNotFound:
+            return "The package does not contain a manifest.json file."
         }
     }
 }

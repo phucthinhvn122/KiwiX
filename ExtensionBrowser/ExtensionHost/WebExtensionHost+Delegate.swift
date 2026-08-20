@@ -102,7 +102,7 @@ extension WebExtensionHost: WKWebExtensionControllerDelegate {
         completionHandler: @escaping (Set<WKWebExtension.Permission>, Date?) -> Void
     ) {
         delegateCalls.record("promptForPermissions")
-        completionHandler(policy(for: extensionContext) == .trustFirstPartyBundle ? permissions : [], nil)
+        completionHandler(policy(for: extensionContext).autoGrantsRuntimePrompts ? permissions : [], nil)
     }
 
     func webExtensionController(
@@ -113,7 +113,7 @@ extension WebExtensionHost: WKWebExtensionControllerDelegate {
         completionHandler: @escaping (Set<URL>, Date?) -> Void
     ) {
         delegateCalls.record("promptForPermissionToAccess")
-        completionHandler(policy(for: extensionContext) == .trustFirstPartyBundle ? urls : [], nil)
+        completionHandler(policy(for: extensionContext).autoGrantsRuntimePrompts ? urls : [], nil)
     }
 
     func webExtensionController(
@@ -125,7 +125,7 @@ extension WebExtensionHost: WKWebExtensionControllerDelegate {
     ) {
         delegateCalls.record("promptForPermissionMatchPatterns")
         completionHandler(
-            policy(for: extensionContext) == .trustFirstPartyBundle ? matchPatterns : [],
+            policy(for: extensionContext).autoGrantsRuntimePrompts ? matchPatterns : [],
             nil
         )
     }

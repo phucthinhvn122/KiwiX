@@ -7,6 +7,13 @@ enum SafePersistence {
     static let maximumHistoryBytes = 8 * 1_024 * 1_024
     static let maximumSnapshotBytes = 4 * 1_024 * 1_024
     static let maximumTabCount = 50
+    static let maximumExtensionCatalogBytes = 256 * 1_024
+    static let maximumInstalledExtensionCount = 32
+    static let maximumExtensionNameBytes = 160
+    /// A manifest can legitimately list dozens of permissions and match patterns. Hundreds is
+    /// a catalog someone is trying to grow without bound, not an extension.
+    static let maximumGrantedEntryCount = 256
+    static let maximumGrantedEntryBytes = 512
 
     static func title(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -4,14 +4,36 @@ import WebKit
 /// How an extension's permissions are resolved by ``WebExtensionHost``.
 ///
 /// Spec §7 requires an explicit permission sheet before install, with a bold warning for
-/// `<all_urls>`. That UI is M3 work. Until it exists the host only auto-grants for bundles the
-/// app itself ships (the API harness) and denies every runtime prompt for anything else, so no
-/// third-party extension can silently acquire host access.
+/// `<all_urls>`. `userGranted` is what that sheet produces: the exact set the user ticked, carried
+/// across launches by the installed-extension catalog. Nothing widens it afterwards.
 enum WebExtensionPermissionPolicy: Sendable, Equatable {
-    /// Nothing is granted and every runtime prompt resolves to an empty set.
+    /// Nothing is granted. Every requested permission is denied explicitly rather than left unset,
+    /// so a later default change cannot turn silence into consent.
     case denyAll
-    /// Grant everything the manifest requests at load time. First-party bundles only.
+    /// Grant everything the manifest requests at load time. First-party bundles only — the app's
+    /// own API harness, never a sideloaded package.
     case trustFirstPartyBundle
+    /// Grant exactly what the user approved on the permission sheet.
+    ///
+    /// Stored as strings because these outlive the process: the catalog on disk is the record of
+    /// what was agreed to, and `WKWebExtension.Permission` / `MatchPattern` are runtime types.
+    case userGranted(permissions: Set<String>, matchPatterns: Set<String>)
+
+    /// Whether a *runtime* prompt is answered with a grant without asking the user.
+    ///
+    /// Only first-party bundles are. Under `userGranted` the install-time decisions are already on
+    /// the context, so anything the runtime still has to ask about is by definition something the
+    /// user did not approve — and there is no mid-session sheet yet, so it is denied rather than
+    /// guessed at. The exhaustive switch is deliberate: a new policy case must not be able to reach
+    /// this code path by falling through to a default.
+    var autoGrantsRuntimePrompts: Bool {
+        switch self {
+        case .trustFirstPartyBundle:
+            return true
+        case .denyAll, .userGranted:
+            return false
+        }
+    }
 }
 
 enum WebExtensionHostError: LocalizedError, Equatable {

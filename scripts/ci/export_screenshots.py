@@ -215,9 +215,15 @@ def main() -> int:
         print("xcresulttool has no 'export attachments'; walking the legacy object graph")
         export_via_legacy(arguments.xcresult, arguments.output)
 
+    # Text attachments matter as much as the pictures here: the in-process rendering tests attach a
+    # dump of the address bar's geometry, colours and font on every run, pass or fail, and that dump
+    # is the artifact somebody actually reads when a screenshot shows an empty field.
+    # `.json` is left out on purpose: the exporter's own manifest.json would then count as an
+    # attachment and the "nothing was extracted" branch below would never fire.
+    keep = {".png", ".jpg", ".jpeg", ".heic", ".txt"}
     images = sorted(
         path for path in arguments.output.rglob("*")
-        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".heic"}
+        if path.is_file() and path.suffix.lower() in keep and path.name != "NO-SCREENSHOTS.txt"
     )
     if not images:
         # The artifact upload is configured to fail on an empty path, and an extraction hiccup must
@@ -229,7 +235,7 @@ def main() -> int:
         print("No screenshots were extracted. The .xcresult bundle is still uploaded intact.")
         return 0
 
-    print(f"Extracted {len(images)} screenshot(s):")
+    print(f"Extracted {len(images)} attachment(s):")
     for image in images:
         print(f"  {image.relative_to(arguments.output)}  ({image.stat().st_size} bytes)")
     return 0

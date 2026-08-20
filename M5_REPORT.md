@@ -15,6 +15,15 @@ CI run `32344527822`: **140 test, 0 failure**.
 
 ## Lỗi 1 — Gõ vào thanh địa chỉ không thấy chữ
 
+> **ĐÍNH CHÍNH (2026-08-20, sau M6).** Bản vá dưới đây **không sửa được lỗi người dùng báo.** M6 dựng
+> target UI test, chụp ảnh app đang chạy, và đếm pixel: với tám ký tự trong ô, dải chữ chỉ có đúng ba
+> màu — nền, viền focus, và màu pha giữa hai cái đó. Lúc nghỉ thì cả placeholder cũng không vẽ. Tức là
+> **không có glyph nào được vẽ, màu gì cũng không**, nên nguyên nhân không thể là `textColor`:
+> placeholder do UIKit tự tô màu, `textColor` không đụng tới nó được. Phân tích bên dưới về `textColor`
+> vẫn đúng như một thiếu sót thật sự trong code, nhưng nó **không phải** nguyên nhân của lỗi. Nguyên
+> nhân thật vẫn chưa biết và đang được đo, không đoán — xem R-23 trong `RISKS.md`.
+
+
 `addressField` **chưa bao giờ được gán `textColor`**. Không có dòng nào, ở bất kỳ đâu trong repo:
 
 ```
@@ -160,7 +169,7 @@ Kỳ vọng: `Private API guard passed`, `Advertising SDK guard passed`.
 
 | Việc | Kỳ vọng |
 |---|---|
-| Bật dark mode, chạm thanh địa chỉ, gõ | Chữ hiện rõ. Đây là lỗi chính. |
+| Bật dark mode, chạm thanh địa chỉ, gõ | ~~Chữ hiện rõ~~ — **sai, xem đính chính ở đầu mục Lỗi 1.** Ô vẫn không vẽ chữ (R-23). |
 | Bật light mode, gõ | Vẫn rõ (light mode trước giờ vẫn đúng, đừng để bản vá làm hỏng) |
 | Mở tab mới, chạm thanh địa chỉ, rồi chạm vùng trang trống | Bàn phím tắt, không điều hướng đi đâu |
 | Đang gõ, chạm đúng một cái link | Bàn phím tắt, **link không mở** |

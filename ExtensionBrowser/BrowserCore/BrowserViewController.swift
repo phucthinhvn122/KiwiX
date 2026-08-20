@@ -425,7 +425,10 @@ final class BrowserViewController: UIViewController {
         } else {
             addressField.text = tab.url?.absoluteString
         }
-        addressField.accessibilityValue = addressField.text
+        // No `accessibilityValue` is set here on purpose. UITextField already reports its own
+        // live text to accessibility; assigning a snapshot overrode that with whatever the
+        // address was at the moment a tab loaded, so VoiceOver — and XCUITest's `value` —
+        // read a blank field for the entire time the user was typing into it.
         if let favicon = tab.favicon {
             addressIconView.image = favicon
         } else if tab.isPrivate {

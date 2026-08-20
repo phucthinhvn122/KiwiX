@@ -115,6 +115,9 @@ targets:
     deploymentTarget: "18.4"
     sources:
       - path: ExtensionBrowserTests
+      # Shared with the UI-test target: ScreenInk measures pixels, and both targets need it —
+      # one photographs the running app, the other renders a view in-process.
+      - path: TestSupport
       - path: Benchmarks
       # Copied verbatim so an extension keeps its on-disk layout; WKWebExtension needs a real
       # directory with a manifest at its root.
@@ -136,6 +139,8 @@ targets:
     deploymentTarget: "18.4"
     sources:
       - path: ExtensionBrowserUITests
+      # Shared with the unit-test target; see the note there.
+      - path: TestSupport
     dependencies:
       - target: ExtensionBrowser
     settings:

@@ -47,8 +47,11 @@ final class BrowserChromeUITests: XCTestCase {
     /// One character is photographed, then eight, and the ink between the two is counted. Everything
     /// that is not a glyph — the magnifying glass, the clear button, the caret, the field's own
     /// background — is present in both shots and cancels out, so the difference is the text and
-    /// nothing else. With the shipped bug the difference was approximately zero while
-    /// `field.value` read back perfectly, which is exactly why no assertion on `value` would help.
+    /// nothing else.
+    ///
+    /// The first run of this test measured a difference of approximately zero, and the screenshots
+    /// it left behind show why no assertion on `value` could have caught it: the field's whole text
+    /// band holds three colours — its surface, its focus border, and the blend between them.
     func testTypingIntoTheAddressBarPutsInkOnTheScreen() throws {
         let field = try addressField()
         field.tap()
@@ -57,15 +60,13 @@ final class BrowserChromeUITests: XCTestCase {
             "No keyboard came up, so nothing below this measures typing."
         )
 
-        field.typeText("W")
+        XCTAssertEqual(type("W", into: field), "W", "The field never took the opening character.")
         let single = field.screenshot().image
         attach(single, named: "address-bar-one-character")
 
-        field.typeText("WWWWWWW")
+        XCTAssertEqual(type("WWWWWWW", into: field), "WWWWWWWW", "The field did not accept the text.")
         let eight = field.screenshot().image
         attach(eight, named: "address-bar-eight-characters")
-
-        XCTAssertEqual(field.value as? String, "WWWWWWWW", "The field did not accept the text.")
 
         let inkForOne = try ScreenInk.inkPixelCount(in: single)
         let inkForEight = try ScreenInk.inkPixelCount(in: eight)
@@ -190,6 +191,46 @@ final class BrowserChromeUITests: XCTestCase {
             "The Extensions screen did not come up."
         )
         attachScreen(named: "extensions-screen")
+    }
+
+    // MARK: - Typing
+
+    /// Types, and does not return until the field agrees it took the characters.
+    ///
+    /// `waitForExistence` on the keyboard returns while it is still animating up, and the first run
+    /// of this test lost its opening keystroke to that gap: the one-character shot photographed an
+    /// empty field and the eight-character shot held seven. Re-sending is only safe when nothing
+    /// landed at all, so a partial delivery is reported back rather than doubled.
+    ///
+    /// Returns what the field actually holds, which is what the caller should assert on.
+    @discardableResult
+    private func type(_ text: String, into field: XCUIElement, timeout: TimeInterval = 5) -> String {
+        let before = enteredText(of: field)
+        let target = before + text
+
+        field.typeText(text)
+        if settles(field, on: target, timeout: timeout) {
+            return target
+        }
+        guard enteredText(of: field) == before else {
+            return enteredText(of: field)
+        }
+
+        field.typeText(text)
+        _ = settles(field, on: target, timeout: timeout)
+        return enteredText(of: field)
+    }
+
+    private func settles(_ field: XCUIElement, on value: String, timeout: TimeInterval) -> Bool {
+        let holds = expectation(for: NSPredicate(format: "value == %@", value), evaluatedWith: field)
+        return XCTWaiter().wait(for: [holds], timeout: timeout) == .completed
+    }
+
+    /// XCUITest reports the placeholder as a text field's `value` when the field is empty, so a raw
+    /// read cannot tell "nothing was typed" apart from "the placeholder is showing".
+    private func enteredText(of field: XCUIElement) -> String {
+        let value = (field.value as? String) ?? ""
+        return value == field.placeholderValue ? "" : value
     }
 
     // MARK: - Lookups

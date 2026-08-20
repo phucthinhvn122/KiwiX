@@ -34,7 +34,7 @@ biệt, nên M2 ghi `skipped` chứ không đoán (DECISIONS §4.2.5).
 ## Cách chạy
 
 ```bash
-make project
+make generate
 make test
 ```
 

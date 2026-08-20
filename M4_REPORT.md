@@ -119,7 +119,7 @@ App không khai `LSSupportsOpeningDocumentsInPlace`, nên mọi file đến đ�
 ## Cách chạy
 
 ```bash
-make project
+make generate
 make test
 ```
 

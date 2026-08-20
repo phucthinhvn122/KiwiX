@@ -289,7 +289,7 @@ trước khi ký compatibility v1.
 ## Cách tái tạo
 
 ```bash
-make project
+make generate
 make test 2>&1 | grep KIWIX_HARNESS_REPORT
 ```
 

@@ -50,7 +50,7 @@ Ba cơ chế để bảng kết quả không nói dối:
 
 ```bash
 # Dựng project (XcodeGen, không sửa .xcodeproj bằng tay)
-make project
+make generate
 
 # Chạy toàn bộ test trên simulator iOS 18.4+
 make test

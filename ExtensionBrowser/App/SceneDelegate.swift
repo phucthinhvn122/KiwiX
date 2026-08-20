@@ -5,6 +5,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
     private weak var browserViewController: BrowserViewController?
     private var webExtensionHost: WebExtensionHost?
+    private var extensionCoordinator: ExtensionInstallCoordinator?
 
     func scene(
         _ scene: UIScene,
@@ -27,9 +28,17 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         webExtensionHost.startSession()
         self.webExtensionHost = webExtensionHost
 
+        // Everything the user installed is reloaded from the catalog, not from whatever happened to
+        // still be on disk. Deliberately not awaited: an extension that takes a moment to load must
+        // not hold up first paint.
+        let extensionCoordinator = ExtensionInstallCoordinator(host: webExtensionHost)
+        self.extensionCoordinator = extensionCoordinator
+        Task { await extensionCoordinator.restore() }
+
         let browser = BrowserViewController(
             tabManager: tabManager,
-            settingsStore: .shared
+            settingsStore: .shared,
+            extensionCoordinator: extensionCoordinator
         )
 
         let window = UIWindow(windowScene: windowScene)
@@ -39,6 +48,22 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         self.window = window
         browserViewController = browser
         PerformanceProfiler.event("App UI Ready")
+
+        openExtensionPackage(in: connectionOptions.urlContexts)
+    }
+
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        openExtensionPackage(in: URLContexts)
+    }
+
+    /// A `.crx` or `.zip` handed over by another app.
+    ///
+    /// Only a copy is accepted. The app does not declare `LSSupportsOpeningDocumentsInPlace`, so
+    /// every incoming document lands in our inbox — and the import path deletes what it reads,
+    /// which must never be the user's own file somewhere else.
+    private func openExtensionPackage(in contexts: Set<UIOpenURLContext>) {
+        guard let context = contexts.first(where: { $0.url.isFileURL && !$0.options.openInPlace }) else { return }
+        browserViewController?.presentExtensionInstall(fileURL: context.url)
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {

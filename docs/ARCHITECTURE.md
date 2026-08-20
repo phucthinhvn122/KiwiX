@@ -85,6 +85,12 @@ WKWebExtension(resourceBaseURL:)  ->  WKWebExtensionContext  ->  WKWebExtensionC
              +-- WebExtensionTabAdapter   (WKWebExtensionTab)   -> TabManager
              +-- WebExtensionWindowAdapter (WKWebExtensionWindow)
              +-- WebExtensionHarnessChannel (test-only API probe transport)
+
+ExtensionInstallCoordinator  ->  ExtensionPackageInstaller  ->  SafeZIPExtractor
+             |                            |
+             |                            +-- ExtensionPackageReader -> CRX3Reader (signature)
+             +-- InstalledExtensionStore (catalog, the authority)
+             +-- ExtensionPermissionSheetViewController (consent, spec 7)
 ```
 
 `WebExtensionHost` holds the single controller, keeps a `UUID -> WebExtensionTabAdapter` registry, and
@@ -104,9 +110,18 @@ the caller hangs instead of reporting that fact.
 
 Permission answers come from a `WebExtensionPermissionPolicy` per context. `trustFirstPartyBundle`
 grants every requested permission and match pattern and exists for the bundled harness fixture only.
-`denyAll` is the fallback for any context whose policy was not recorded. There is no user-facing install
-or grant UI in the tree right now; the manager UI was removed with the Path B runtime and is rebuilt on
-Path A in M4, together with the CRX3 installer and the §7 confirmation flow.
+`userGranted(permissions:matchPatterns:)` carries exactly the set the consent sheet displayed, for
+anything the user installed. `denyAll` is the fallback for any context whose policy was not recorded,
+and the three runtime prompts in `WebExtensionHost+Delegate` answer with nothing regardless.
+
+The subset property is structural rather than checked after the fact: the granted set is built *from*
+`requestedPermissions` and `allRequestedMatchPatterns`, so a pattern the manifest never asked for has no
+route into a record. `optionalPermissions` are recorded as denied and stay denied — there is no runtime
+grant dialog, and the sheet says so rather than implying one exists.
+
+`allRequestedMatchPatterns`, not `requestedPermissionMatchPatterns`: the latter omits content-script
+`matches`, so an extension whose entire host access comes from content scripts would be granted nothing
+and fail silently.
 
 ### Private browsing
 
@@ -116,24 +131,57 @@ controller to normal configurations only and leaves it `nil` for private ones. T
 the enforcement point for "extensions are off in private tabs", and `PrivateModeTests` asserts both
 halves of it — the controller present on normal, absent on private, before and after a profile reset.
 
-### Package unpacking
+### Installing a package
 
-`ExtensionHost/Install/` is what survived the Path B teardown, kept because CRX3 install still has to
-produce a directory before `WKWebExtension(resourceBaseURL:)` can read it.
+The user picks a file; nothing else is a source. There is no store, no URL field, and no auto-update,
+because a file the user chose is a file the user can point at afterwards.
+
+`ExtensionPackageReader` classifies it. A `.crx` goes through `CRX3Reader`, which verifies an RSA
+PKCS#1 v1.5 SHA-256 proof over the Chromium-specified payload — the literal `CRX3 SignedData` plus a NUL,
+then the little-endian header length, then the header, then the archive — and derives the publisher id
+as the first 128 bits of `SHA256(DER SPKI)` rendered in the `a`-`p` alphabet. The header is rejected if it
+contains an end-of-central-directory token, which would let a crafted header steer a ZIP reader.
+
+The resulting type has two cases and deliberately not three:
+
+```swift
+case verified(publisherIdentifier: String)
+case unsigned(UnsignedReason)   // .plainArchive | .noSupportedProof
+```
+
+A *wrong* signature is a thrown error that never reaches the UI. Only a *missing* one — a plain archive,
+or a CRX3 carrying only proofs `SecKey` will not evaluate — reaches the consent sheet, where spec 7
+requires a warning banner and a second confirmation. Collapsing both into one "signature not OK" case is
+how a broken signature eventually gets handled with a soft warning.
 
 `SafeZIPExtractor` bounds the archive at 50 MiB compressed, 2,000 entries, 16 MiB per entry, 100 MiB
 expanded, and a 250:1 compression-ratio threshold for large entries. Entry paths are rejected for
 absolute/traversal forms, empty or dot components, backslashes, drive paths, NUL and control bytes,
 case/Unicode collisions, symlinks, unsupported object types, executable extensions, and native binary
-magic. CRC is checked while extracting.
+magic. CRC is checked while extracting. `ExtensionIdentity` then computes a SHA-256 over normalized
+relative paths, lengths, and file bytes; the first 128 bits are the extension's identifier, which is also
+its `uniqueIdentifier` and its directory name under `Application Support/ExtensionBrowser/Extensions/`.
 
-`ExtensionIdentity` computes a SHA-256 over normalized relative paths, lengths, and file bytes; the
-first 128 bits form a package identifier. `ExtensionResourcePath` is the path-safety check the extractor
-calls. Nothing in this directory reads a manifest.
+Nothing here reads a manifest. The consent sheet is filled by constructing `WKWebExtension` on the
+staging directory and reading `requestedPermissions` and `allRequestedMatchPatterns` back. This is not
+tidiness: the strings on screen are the same strings written to the catalog and later turned back into
+`WKWebExtension.Permission` when the grant is applied. A sheet that spelled them differently would be
+describing a permission that never happens.
 
-Packages are not signed and publisher identity is not authenticated. Hashes identify exact bytes only.
-CRX3 signature verification is M4 work; per spec §7 an unverifiable signature must produce a warning
-banner and a two-step confirmation, never a silent install.
+`InstalledExtensionStore` is the authority, not the directory listing. `restore()` rebuilds the runtime
+from the catalog at launch; a commit whose catalog write fails has its files deleted rather than left as
+an orphan; and any identifier read back from the catalog is re-validated through
+`ExtensionIdentifier(rawValue:)` before it can become a path component, because a string read out of a
+file on disk is not something to hand to a recursive delete.
+
+A `.crx` declares its own UTI conforming to `public.data`, not `public.zip-archive` — CRX3 opens with
+`Cr24`, so the latter would be a false claim the system acts on. The app does not declare
+`LSSupportsOpeningDocumentsInPlace`, and `SceneDelegate` re-checks `!options.openInPlace` anyway, because
+the import path deletes the file it reads and that must never be a user's original.
+
+Signature verification proves who built a package and that it was not altered afterwards. It does not
+make a publisher trustworthy: the id is a key fingerprint, not a vetted name, and a plain `.zip` has
+neither.
 
 ### What the runtime actually supports
 

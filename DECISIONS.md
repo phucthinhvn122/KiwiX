@@ -145,7 +145,7 @@ Bảng probe đầy đủ 90 dòng nằm ở `COMPATIBILITY.md`.
 | `storage.sync` | PASS (API) | CHƯA CHẠY | API chạy, **ngữ nghĩa đồng bộ chưa chứng minh** — cần thiết bị thật |
 | `tabs` | PASS | CHƯA CHẠY | create/query/get/activate/remove xuyên adapter thật; 4 event thật sự nổ |
 | `scripting` | PASS | CHƯA CHẠY | `executeScript` + `insertCSS` vào tab thật |
-| `action` / popup / badge | MỘT PHẦN | CHƯA CHẠY | `setBadgeText`/`setTitle` pass, delegate `didUpdateAction` nổ. **Popup chưa đo** — `presentActionPopup` hiện app tự từ chối, là phạm vi **M4** (cần `WKWebExtensionContext.webViewConfiguration`) |
+| `action` / popup / badge | MỘT PHẦN | CHƯA CHẠY | `setBadgeText`/`setTitle` pass, delegate `didUpdateAction` nổ. **Popup chưa đo** — `presentActionPopup` hiện app tự từ chối. M4 chỉ dựng đường cài; popup vẫn chưa làm, và cần `WKWebExtensionContext.webViewConfiguration` |
 | `i18n` | MỘT PHẦN | CHƯA CHẠY | Mới đo `getUILanguage` = `en-US` |
 | `declarativeNetRequest` | **KHÔNG THI HÀNH** | CHƯA CHẠY | Static ruleset nạp được, dynamic rules thêm/đọc được, `getEnabledRulesets`/`hasContentModificationRules` đều báo có. **Đo bằng server nội bộ (M3, run `32236350621`): không chặn request nào, cả static lẫn dynamic, cả hai dạng filter; `getMatchedRules` trả về rỗng.** Cùng URL đó, `WKContentRuleList` tự biên dịch thì chặn được. `getAvailableStaticRuleCount` không tồn tại. Chi tiết + các confound đã loại: `COMPATIBILITY.md` |
 | `webRequest` quan sát | **KHÔNG NỔ** | CHƯA CHẠY | Đăng ký listener cho `<all_urls>` được. **Đo với traffic thật (M3): 0 event trên 21 request.** Không tính là pass |
@@ -281,3 +281,48 @@ Chỉ chuyển sang M0 khi tất cả điều kiện sau đúng:
 1. GitHub remote private đã tạo: <https://github.com/phucthinhvn122/KiwiX>.
 2. Certificate `.p12` và provisioning profile của Apple Developer Program vẫn phải được chủ tài khoản
    Apple cấp qua GitHub Actions secrets; không thể tự sinh hợp lệ chỉ từ repository.
+3. **Hướng đi cho content blocking (R-21) — đang chặn thước đo v1.** `declarativeNetRequest` không thi
+   hành trên runtime Apple (đo ở M3 bằng server nội bộ), nên uBlock Origin Lite — yardstick §3 của v1 —
+   cài được nhưng không chặn được gì. Ba lựa chọn: (a) bỏ uBOL khỏi thước đo v1 và nói rõ giới hạn;
+   (b) dịch DNR ruleset sang `WKContentRuleList` phía app — chạy được nhưng là mở rộng phạm vi spec
+   chưa cho phép, và chỉ phủ được tập con của DNR; (c) chờ Apple. Cần chốt trước khi tính v1 là xong.
+
+## 8. ADR-005 — Đường cài extension từ file (chốt ở M4)
+
+Bối cảnh: spec §5 yêu cầu installer CRX3 bóc `Cr24` rồi đưa ZIP cho
+`WKWebExtension(resourceBaseURL:)`, **không tự parse manifest**. §7 yêu cầu hiện quyền trước khi cài,
+in đậm `<all_urls>`, và chữ ký không verify được thì banner + xác nhận 2 bước.
+
+**Quyết định 1 — chữ ký sai và chữ ký vắng mặt là hai chuyện khác nhau.**
+`ExtensionPackageSignature` chỉ có `.verified(publisherIdentifier:)` và `.unsigned(UnsignedReason)`.
+Không có case `.failed`: một CRX3 mà chữ ký không khớp là lỗi ném ra từ `CRX3Reader` và không bao giờ
+tới UI. Đường "banner + 2 bước" của §7 chỉ dành cho gói **không có** chữ ký kiểm được — zip trần, hoặc
+CRX3 chỉ mang proof ECDSA mà `SecKey` không nhận. Gộp hai thứ vào một case sớm muộn sẽ khiến "chữ ký
+hỏng" bị xử lý bằng một cảnh báo mềm.
+
+**Quyết định 2 — bảng quyền đọc lại từ `WKWebExtension`, không đọc `manifest.json`.**
+Hệ quả trực tiếp của ADR-001. `ExtensionPermissionSummaryReader` dựng `WKWebExtension` trên thư mục
+staging rồi lấy `requestedPermissions` / `allRequestedMatchPatterns`. Lý do không phải gọn gàng: chuỗi
+hiện trên sheet là **đúng chuỗi** ghi vào catalog rồi đem dựng `WKWebExtension.Permission` lúc cấp
+quyền. Nếu sheet đánh vần khác runtime thì nó đang mô tả một sự cho phép không bao giờ xảy ra.
+
+**Quyết định 3 — quyền được đóng băng lúc đồng ý, không kế thừa.**
+`WebExtensionPermissionPolicy` thêm case thứ ba `.userGranted(permissions:matchPatterns:)`. Record ghi
+đúng tập sheet vừa hiện; `optional_permissions` ghi là **không cấp** và delegate trả `[]` cho mọi
+runtime prompt. Kiểm tra subset là **cấu trúc**, không phải validate sau: tập cấp được dựng *từ* chính
+yêu cầu của manifest, nên một pattern manifest không xin thì không có đường vào record.
+
+**Quyết định 4 — catalog là thẩm quyền, không phải thư mục trên đĩa.**
+`restore()` dựng lại runtime từ `Extensions-v1.json`. Nếu commit xong mà ghi catalog thất bại, file vừa
+commit bị xoá — không để lại orphan trong Application Support. Ngược lại, identifier lấy từ catalog
+luôn phải qua `ExtensionIdentifier(rawValue:)` trước khi thành path component: một chuỗi đọc từ file
+trên đĩa không được đem thẳng đi xoá thư mục.
+
+**Quyết định 5 — `.crx` khai UTI riêng conform `public.data`.**
+CRX3 mở đầu bằng `Cr24`, không phải `PK`, nên khai nó conform `public.zip-archive` là một lời nói dối
+hệ điều hành sẽ hành động theo. App không khai `LSSupportsOpeningDocumentsInPlace`; `SceneDelegate`
+kiểm `!options.openInPlace` lần nữa, vì đường nhập file **xoá thứ nó đọc**.
+
+Đánh đổi đã chấp nhận: cài lại đúng gói cũ trả lỗi `packageAlreadyInstalled` thay vì cập nhật tại chỗ;
+không có auto-update; không có per-site grant. Chi tiết và cách kiểm chứng: `M4_REPORT.md`.
+

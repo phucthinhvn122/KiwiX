@@ -1,14 +1,20 @@
 # KiwiX — ExtensionBrowser v3
 
-> Trạng thái: runtime hiện tại là compatibility layer `chrome.*` giới hạn, min iOS 18.4, đã được
-> harden theo contract trong `docs/ARCHITECTURE.md`. `WKWebExtension` vẫn là một quyết định migration
-> tương lai trong `DECISIONS.md`, không phải implementation hay bằng chứng compatibility hiện tại.
+> Trạng thái: runtime là **`WKWebExtension` của Apple**, min iOS 18.4 (Path A, ADR-001). Compatibility
+> layer `chrome.*` tự viết đã bị gỡ hẳn ở cuối M2 — app không parse manifest và không giả lập API nào.
+> Mọi con số về compatibility trong repo này là **đo được** trên runtime thật, không phải suy đoán:
+> xem [COMPATIBILITY.md](COMPATIBILITY.md). Cảnh báo lớn nhất: `declarativeNetRequest` **không chặn
+> gì** (R-21), nên uBlock Origin Lite chưa dùng được.
 
 Các quyết định đã chốt nằm trong [DECISIONS.md](DECISIONS.md), rủi ro và stop-ship conditions nằm
-trong [RISKS.md](RISKS.md). Bằng chứng build/test M0 và gate còn lại nằm trong
-[M0_REPORT.md](M0_REPORT.md).
+trong [RISKS.md](RISKS.md). Bằng chứng theo từng milestone nằm trong
+[M0_REPORT.md](M0_REPORT.md) → [M2_REPORT.md](M2_REPORT.md) → [M3_REPORT.md](M3_REPORT.md) →
+[M4_REPORT.md](M4_REPORT.md).
 
-ExtensionBrowser là proof-of-concept browser native cho iPhone, viết bằng Swift, UIKit và WebKit. MVP tập trung vào browser nhiều tab có quản lý bộ nhớ và một compatibility layer nhỏ cho WebExtensions: nhập ZIP Manifest V3, kiểm tra package, cài đặt, match URL rồi inject content script JavaScript/CSS.
+ExtensionBrowser là proof-of-concept browser native cho iPhone, viết bằng Swift, UIKit và WebKit. Hai
+nửa: một browser nhiều tab có quản lý bộ nhớ, và một host cho WebExtension chạy trên `WKWebExtension`
+— nhập gói `.crx`/`.zip` từ Files, verify chữ ký CRX3 khi có, hiện toàn bộ quyền trước khi cài, rồi
+giao thư mục đã giải nén cho WebKit.
 
 Repository được thiết kế để phát triển từ Windows: sửa code bằng VS Code, push lên GitHub, và để GitHub Actions macOS sinh Xcode project, chạy test, tạo build Simulator cùng artifact device. Không cần Mac local cho vòng lặp phát triển thông thường; tuy nhiên Apple vẫn yêu cầu Xcode/macOS ở bước compile và yêu cầu certificate/provisioning profile hợp lệ để tạo IPA cài được.
 
@@ -93,13 +99,13 @@ Mở pull request để workflow **Build Simulator** compile và chạy unit tes
 
 - `BrowserCore`: UIKit browser shell, address/search parsing, `WKWebView` configuration và navigation.
 - `Tabs`: model/session store, tạo/chọn/đóng tab, snapshot và lifecycle `ACTIVE` / `WARM` / `SUSPENDED`.
-- `ExtensionHost`: Path A (ADR-001). Giữ `WKWebExtensionController`, adapter tab/window, delegate trả lời runtime của Apple, harness channel đo API matrix. `Install/` chỉ còn phần giải nén an toàn + checksum để CRX3 (M4) có thư mục cho `WKWebExtension(resourceBaseURL:)`. Không parse manifest, không giả lập `chrome.*`.
+- `ExtensionHost`: Path A (ADR-001). Giữ `WKWebExtensionController`, adapter tab/window, delegate trả lời runtime của Apple, harness channel đo API matrix. `Install/` là đường cài đầy đủ: đọc CRX3, verify chữ ký, giải nén an toàn, catalog, sheet đồng ý quyền và màn hình quản lý. Không parse manifest, không giả lập `chrome.*` — WebKit hiểu manifest, app chỉ hỏi lại nó.
 - `Settings`: search engine built-in/custom và thông tin privacy. `History` có actor store + màn hình xem/xóa/mở lại; `Downloads` nhận file trực tiếp từ WebKit, hiển thị tiến độ và cho phép mở/xóa file.
 - `Shared`: logging, signpost, diagnostics.
 
 Normal tabs dùng persistent website data store và chia sẻ process pool. Private tabs dùng non-persistent store/process pool riêng, không ghi history/session, và `webExtensionController` để `nil` — `WKWebViewConfiguration` được copy lúc tạo web view nên đây là điểm duy nhất ép được §7.
 
-Browser MVP hiện có start page KiwiX, bottom toolbar hai hàng Back/Forward, address-or-search, Reload/Stop, tab count và menu; progress KVO, page title/URL tracking, Share, Open in External App, History, Downloads, lỗi navigation + Retry, JavaScript alert/confirm/prompt và mở `target=_blank` thành tab mới. Tab switcher hiển thị snapshot/lifecycle, normal session được persist; memory warning snapshot rồi release toàn bộ background web view. Debug build có metrics URL/tab/live web-view/navigation/memory cùng trạng thái attach của extension host. UI quản lý extension đã gỡ cùng runtime Path B, sẽ dựng lại trên Path A ở M4.
+Browser MVP hiện có start page KiwiX, bottom toolbar hai hàng Back/Forward, address-or-search, Reload/Stop, tab count và menu; progress KVO, page title/URL tracking, Share, Open in External App, History, Downloads, lỗi navigation + Retry, JavaScript alert/confirm/prompt và mở `target=_blank` thành tab mới. Tab switcher hiển thị snapshot/lifecycle, normal session được persist; memory warning snapshot rồi release toàn bộ background web view. Debug build có metrics URL/tab/live web-view/navigation/memory cùng trạng thái attach của extension host. Menu ⋯ có mục **Extensions** khi scene dựng được extension host: danh sách đã cài, công tắc bật/tắt, vuốt để gỡ, và nút **+** để nhập gói từ Files.
 
 ## GitHub Actions
 
@@ -181,58 +187,98 @@ xcodegen generate --spec project.yml
 
 Script sẽ fail nếu checksum hoặc version không đúng. Windows developer không cần chạy lệnh này và cũng không thể compile target iOS bằng Xcode trên Windows.
 
-## Import extension demo
+## Cài extension
+
+Nguồn duy nhất là một file trên máy — không có store, không có ô nhập URL, không có auto-update. Nhận
+`.crx` (CRX3) và `.zip`; `manifest.json` phải ở root, hoặc trong đúng một thư mục bọc.
 
 Tạo ZIP mẫu từ repository root:
 
 ```powershell
-Compress-Archive -Path .\Examples\HelloExtension\manifest.json, .\Examples\HelloExtension\content.js, .\Examples\HelloExtension\content.css -DestinationPath .\HelloExtension.zip -Force
+Compress-Archive -Path .\Examples\HelloExtension\* -DestinationPath .\HelloExtension.zip -Force
 ```
 
-`manifest.json` phải nằm ở root ZIP. Trong app, mở menu **Extensions**, chọn **Import Extension**, chọn `HelloExtension.zip`, kiểm tra permission rồi cài. Bật extension và mở một trang HTTP/HTTPS; badge nhỏ xuất hiện khoảng ba giây mà không nhận pointer event hoặc thay đổi flow layout.
+Trong app: menu ⋯ → **Extensions** → **+** → chọn file. Cũng có thể mở gói từ Files hoặc share sheet;
+đường đó đi qua đúng màn hình đồng ý, không được cấp thêm gì.
 
-Không import extension không tin cậy trên thiết bị chứa dữ liệu quan trọng. Compatibility layer giảm bề mặt quyền nhưng content script được cho phép vẫn đọc/thay đổi DOM của host phù hợp.
+Trước khi cài, KiwiX hiện tên, phiên bản, toàn bộ permission, toàn bộ site access, và nguồn gốc gói:
+
+| Tình huống | KiwiX làm gì |
+|---|---|
+| CRX3 chữ ký hợp lệ | Hiện `Signed by <publisher id>`. Id là fingerprint khoá công khai, **không** phải một cái tên đã được ai đó chứng thực |
+| CRX3 chữ ký sai / payload bị sửa | Từ chối thẳng. Không có nút để đi tiếp |
+| `.zip` hoặc CRX3 không có proof kiểm được | Banner đỏ, và nút **Add** mở thêm một alert xác nhận thứ hai (spec §7) |
+| Xin `<all_urls>` | Dòng cảnh báo **in đậm, màu đỏ**, đặt trên cùng |
+| Tên chứa ký tự ẩn (bidi, zero-width) | Cảnh báo riêng — đây là cách một bản "uBlock" giả được cài |
+
+Quyền được đóng băng lúc bấm Add. `optional_permissions` bị **từ chối cứng**: extension có xin lúc
+chạy cũng không được. Muốn thu hồi thì tắt công tắc (giữ file) hoặc Remove (xoá cả file lẫn quyền).
+
+Đừng cài extension không tin cậy lên thiết bị có dữ liệu quan trọng. Content script được cho phép vẫn
+đọc và thay đổi DOM của trang khớp — `WKContentWorld` cô lập biến toàn cục, không cô lập DOM.
 
 ## Manifest và extension API hiện tại
 
-MVP chỉ nhận Manifest V3 và parse các trường:
+App **không** parse manifest (ADR-001). `WKWebExtension` đọc nó, và app hỏi lại runtime — nên câu hỏi
+"hỗ trợ trường nào" là câu hỏi về WebKit, không về repository này. Câu trả lời được đo, không được
+đoán: harness tự viết probe 90 API trong runtime thật ở mỗi lần chạy CI, và bảng đầy đủ nằm ở
+[COMPATIBILITY.md](COMPATIBILITY.md).
 
-- `name`, `version`, `description`, `permissions`, `host_permissions`.
-- `content_scripts`: `matches`, `exclude_matches`, `js`, `css`, `run_at`, `all_frames`; persistent scripts use the declared frame scope, while programmatic `executeScript` targets the main document.
-- `action` metadata (`default_title`, `default_popup`, `default_icon`) và `icons`; browser menu hiển thị extension actions, popup dùng `WKWebView` non-persistent + bridge và deny toàn bộ remote network.
-- Match pattern gồm `<all_urls>`, HTTP/HTTPS wildcard scheme/host/path và các pattern hợp lệ mà validator chấp nhận.
+Tóm tắt lần đo gần nhất (simulator iOS 18.5): 42 PASS, 0 FAIL, 18 available-nhưng-chưa-chứng-minh,
+26 không có, 4 skip. Ba kết quả đáng nhớ hơn cả con số:
 
-Compatibility bridge được giới hạn có chủ ý. Xem source/runtime và test để biết contract chính xác; API không nằm trong danh sách dưới đây phải trả lỗi unsupported thay vì âm thầm giả lập:
-
-- `chrome.runtime.sendMessage` và listener `chrome.runtime.onMessage` trong phạm vi bridge MVP.
-- `chrome.storage.local.get/set/remove/clear`, tách namespace theo extension.
-- `chrome.tabs.query/create` với permission check.
-- `chrome.scripting.executeScript` với permission/host gate.
-- `chrome.action.getTitle/setTitle` cho title tạm thời. Bridge MVP trả Promise; kiểu callback của Chrome chưa được hỗ trợ.
+- **`background.service_worker` nạp không lỗi và không bao giờ chạy.** Phải dùng `background.scripts`
+  + `persistent: false`. Đa số extension MV3 ngoài đời không thoả điều này.
+- **`declarativeNetRequest` không chặn gì**, `webRequest` listener không nổ lần nào. Đo bằng server
+  thật trên loopback, không suy đoán.
+- `notifications`, `debugger`, `proxy`, `devtools_*` vắng mặt hoàn toàn.
 
 ## Security model tóm tắt
 
-- Giới hạn kích thước archive, từng file, tổng dung lượng giải nén và số entry.
-- Dừng duyệt ZIP ngay ở entry thứ 2.001; giới hạn rule/reference và tổng content-script source chuẩn bị để tránh resource amplification/OOM.
-- Chuẩn hóa/reject absolute path, `..`, duplicate path, symlink và entry không hỗ trợ trước khi ghi file.
-- Reject native executable/Mach-O, dynamic library và resource path không an toàn; extension chỉ cung cấp JS/CSS/HTML/data cho runtime WebKit.
-- Manifest/permission/match pattern được validate trước install; index match được compile/cache, không parse lại manifest mỗi navigation.
-- ID package deterministic từ digest; dữ liệu và storage đặt trong namespace riêng từng extension.
-- Permission và host access được kiểm tra tại runtime trước API/injection nhạy cảm.
-- Declared permission không đồng nghĩa granted permission: broad hosts, `<all_urls>`, `tabs` và `scripting` bắt đầu denied; details UI hỗ trợ Ask/current/selected/all-requested sites và revoke ngay.
-- Favicon native fetch resolve DNS, chặn địa chỉ local/private/reserved, validate mọi redirect và stream với byte/image limits.
-- IPC chỉ nhận JSON string phẳng và preflight byte/depth/token trước decode; tabs, script source/result/parallelism (kể cả budget tổng runtime 16 MiB), storage, persisted state và downloads đều có quota/rate/size limits.
-- File và directory chịu ảnh hưởng từ dữ liệu ngoài được đọc/duyệt streaming với hard cap; repository fail closed khi scan bị truncate và mặc định giới hạn 128 extension đã cài.
-- Permission reload khóa bridge ngay, serialize theo generation và cancel operation đang chạy; `document_idle` dùng scheduler theo tab có replace/cancel khi navigation đổi.
-- Storage JSON hỏng/quá lớn được quarantine rồi phục hồi namespace rỗng; lỗi I/O thật vẫn trả lỗi thay vì bị che.
-- Content scripts dùng `WKContentWorld` riêng theo extension khi API cho phép. Đây không phải sandbox hoàn hảo: script được phép vẫn tương tác DOM trang.
-- Private browsing mặc định không chạy extension trong MVP.
+Phần liên quan tới extension:
+
+- **Quyền là opt-in một lần, hiện đầy đủ trước khi cài.** Tập được cấp dựng *từ* chính yêu cầu của
+  manifest, nên một pattern manifest không xin thì không có đường vào record. Context nào không có
+  policy ghi lại thì mặc định `.denyAll`; ba runtime prompt trong delegate trả về rỗng.
+- **Chữ ký sai ≠ không có chữ ký.** CRX3 verify RSA PKCS#1 v1.5 SHA-256 trên đúng payload Chromium
+  quy định (`"CRX3 SignedData\0" || uint32_le(len(header)) || header || archive`); chữ ký sai là lỗi
+  cứng. Header bị từ chối nếu chứa token EOCD giả (`PK\x05\x06`, `PK\x06\x07`, `PK\x06\x06`).
+- **Giải nén có giới hạn cứng**: số entry, kích thước từng file, tổng dung lượng, tỉ lệ nén; chuẩn hoá
+  và từ chối absolute path, `..`, path trùng, symlink, entry không hỗ trợ; từ chối Mach-O và dylib.
+- **Identifier là digest của gói**, và mọi identifier đọc từ catalog phải qua
+  `ExtensionIdentifier(rawValue:)` trước khi trở thành path component.
+- **Private tab không chạy extension** (spec §7). `webExtensionController` để `nil` trên configuration
+  của private web view — `WKWebViewConfiguration` được copy lúc tạo web view, nên đây là điểm duy nhất
+  ép được điều đó.
+- **Không log chuỗi bắt nguồn từ người dùng.** Lỗi nạp extension log một câu tĩnh, vì error của runtime
+  có thể mang theo đường dẫn.
+
+Phần còn lại của app:
+
+- Favicon fetch resolve DNS rồi chặn địa chỉ local/private/reserved, validate mọi redirect, stream có
+  giới hạn byte và kích thước ảnh.
+- Downloads ghi vào hidden partial rồi atomic-rename, enforce byte/disk/concurrency policy và reconcile
+  partial/orphan lúc khởi động.
+- Persisted state đọc streaming có hard cap; JSON hỏng bị quarantine thay vì làm chết startup.
+- Mở external scheme cần gesture foreground ở top-level, có allowlist/xác nhận và rate limit theo tab.
+
+Cái này **không** có: sandbox hoàn hảo cho content script, per-site grant, revoke từng phần khi
+extension đang chạy, và bất kỳ giới hạn nào do app đặt lên storage/IPC volume của extension — nửa đó
+thuộc về WebKit và chưa được đo.
 
 Chi tiết threat model và giới hạn nằm trong [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Testing
 
-Unit tests hiện bao phủ manifest/parser limits, favicon destination/image policy, permission + selected-site/revoke/reload races, bridge pre-decode/tab/script/storage quotas, repository integrity/corruption/count bounds, idle scheduling, navigation/dialog policy, download byte/disk/reconciliation, bounded persistence/directory scans, data protection và private-mode boundaries. Workflow Simulator là nguồn xác nhận compile/test chính thức.
+Unit tests hiện bao phủ: CRX3 (magic, version, header, token EOCD giả, chữ ký sai, payload bị sửa, id
+lệch), bóc DER SPKI, staging/commit của installer, catalog round-trip và quarantine, registry + policy
+fallback `denyAll`, luồng cài đầu-cuối (prepare/cancel/install/enable/disable/remove/restore), tab
+adapter + rate limit, favicon destination/image policy, navigation/dialog policy, download
+byte/disk/reconciliation, bounded persistence/directory scans, data protection, private-mode
+boundaries, và enforcement thật của `declarativeNetRequest`/`webRequest` đo bằng server loopback.
+
+Không có test nào thay được phần nhìn bằng mắt của sheet đồng ý quyền (§7) — danh sách kiểm ở
+[M4_REPORT.md](M4_REPORT.md). Workflow Simulator là nguồn xác nhận compile/test chính thức.
 
 Do máy Windows không có Xcode/WebKit SDK iOS, không dùng kết quả parse Swift hay artifact giả để thay thế `xcodebuild test`. Nếu workflow đầu tiên phát hiện sai khác SDK/Xcode, sửa source/config rồi push lại và giữ log/`.xcresult` làm bằng chứng.
 
@@ -242,7 +288,8 @@ Do máy Windows không có Xcode/WebKit SDK iOS, không dùng kết quả parse 
 - Không có background service worker (nạp không lỗi nhưng không chạy), binary module, Chrome Web Store auto-install hoặc sync.
 - `declarativeNetRequest` và `webRequest` **có mặt nhưng không thi hành**: rule cài được, runtime báo enabled, và không request nào bị chặn hay bị quan sát. Đo bằng server nội bộ trên loopback, không phải suy đoán — `COMPATIBILITY.md` và `RISKS.md` R-21. Hệ quả: uBlock Origin Lite chưa chạy được.
 - Không hỗ trợ Manifest V2; extension update/rollback, service worker và long-lived ports chưa có.
-- **Không có permission UI, và không có đường cài extension nào cho người dùng.** Chỉ harness bundled của app được tin (`.trustFirstPartyBundle`); mọi thứ khác `.denyAll`. Sheet xác nhận quyền theo §7 là việc của M4 (R-04, R-05).
+- Extension permission là all-or-nothing theo từng extension, đóng băng lúc cài. Không có per-site grant, không có revoke từng phần khi extension đang chạy; `optional_permissions` bị từ chối cứng (R-05).
+- Popup và options page **chưa làm** — app tự trả `actionPopupUnsupported`. Cần `WKWebExtensionContext.webViewConfiguration`, thứ chưa chỗ nào trong repo dùng (R-08).
 - Tab suspension khôi phục URL/snapshot, không serialize toàn bộ JavaScript heap, form state hay back-forward list của trang.
 - History chỉ ghi navigation HTTP(S) của tab thường. Downloads ghi vào hidden partial rồi mới atomic-rename khi hoàn tất, enforce byte/disk/concurrency policy và reconcile partial/orphan files; private metadata không persist nhưng file user chọn tải vẫn tồn tại với warning. Favicon được discover, fetch bằng public-destination policy, validate/decode và cache có quota (private mode không ghi disk cache).
 - Simulator build không chạy trực tiếp trên Windows; signed device build không thể tồn tại nếu thiếu Apple signing assets hợp lệ.
@@ -254,5 +301,5 @@ Do máy Windows không có Xcode/WebKit SDK iOS, không dùng kết quả parse 
 2. Chạy test thiết bị cho DNS/redirect, popup network capture, downloads, file protection, VoiceOver và memory pressure.
 3. Bổ sung runtime permission prompt ngoài activeTab, audit log quyền và E2E revoke/content-world isolation.
 4. Cải thiện restore tab/back-forward state, snapshot cache eviction và đo memory/tab-switch latency trên thiết bị thật.
-5. Thêm extension update/migration, signature/trust policy cho package và fuzz tests ZIP/manifest/matcher.
+5. Chốt hướng content blocking (R-21), phát hiện `service_worker` chết lúc cài (R-18), dựng popup/options page (R-08), rồi mới tới extension update/migration và fuzz corpus cho ZIP/CRX3.
 6. Tạo release workflow riêng cho TestFlight/App Store khi có App Store Connect credentials và policy sản phẩm rõ ràng.

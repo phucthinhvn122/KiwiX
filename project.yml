@@ -78,7 +78,9 @@ targets:
                 UISceneDelegateClassName: "$(PRODUCT_MODULE_NAME).SceneDelegate"
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-        UTImportedTypeDeclarations:
+        # Exported, not Imported: com.extensionbrowser.* is a prefix this app owns, and an
+        # imported declaration claims the opposite.
+        UTExportedTypeDeclarations:
           - UTTypeIdentifier: com.extensionbrowser.web-extension
             UTTypeDescription: Web Extension Package
             UTTypeConformsTo:
@@ -86,6 +88,27 @@ targets:
             UTTypeTagSpecification:
               public.filename-extension:
                 - zip
+          # A CRX3 file is not a ZIP: it opens with `Cr24`, a protobuf header, then the archive.
+          # Declaring it as conforming to public.zip-archive would be a lie the system acts on, so
+          # it gets its own type that conforms to public.data.
+          - UTTypeIdentifier: com.extensionbrowser.crx-extension
+            UTTypeDescription: Chrome Extension Package
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - crx
+              public.mime-type:
+                - application/x-chrome-extension
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Web Extension Package
+            CFBundleTypeRole: Viewer
+            # Alternate, not Owner: a .zip belongs to whatever the user normally opens zips with,
+            # and KiwiX only wants to appear in the share sheet.
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.extensionbrowser.web-extension
+              - com.extensionbrowser.crx-extension
   ExtensionBrowserTests:
     type: bundle.unit-test
     platform: iOS

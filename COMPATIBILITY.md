@@ -244,6 +244,36 @@ Hệ quả thực tế:
 Đây cũng là lý do `loadBackgroundContent` có tham số `timeout:`: không có deadline thì caller treo cho
 tới khi xcodebuild giết test ở 60s, và ta học được đúng con số không.
 
+## Gói nào cài được (M4)
+
+Bảng trên nói về *API*. Phần này nói về *đóng gói* — một extension có thể hợp lệ hoàn toàn mà vẫn không
+qua được cửa cài, và ngược lại, cài được không có nghĩa là chạy được.
+
+| Dạng gói | Nhận? | Ghi chú |
+|---|---|---|
+| CRX3 (`Cr24`, proof RSA SHA-256) | Có | Verify chữ ký, hiện publisher id dẫn từ `SHA256(DER SPKI)[0..16]` |
+| CRX3 chỉ có proof ECDSA | Có, coi như **không ký** | `SecKeyCreateWithData` chỉ nhận `RSAPublicKey` PKCS#1; ECDSA đi vào đường cảnh báo 2 bước |
+| CRX3 chữ ký sai / payload bị sửa | **Không** | Lỗi cứng, không có nút đi tiếp |
+| CRX2 (`Cr24` version 2) | **Không** | Định dạng đã bỏ; header khác hẳn |
+| `.zip` có `manifest.json` ở root | Có, **không ký** | Banner + xác nhận 2 bước |
+| `.zip` bọc trong đúng một thư mục | Có | Installer bóc lớp bọc |
+| `.zip` không có `manifest.json` | **Không** | `ExtensionInstallError.manifestNotFound` |
+| Gói chứa Mach-O / dylib | **Không** | `SafeZIPExtractor` từ chối theo magic, không theo đuôi file |
+| Gói > 50 MiB nén, > 100 MiB giải nén, > 2.000 entry | **Không** | Giới hạn cứng |
+
+Ba điều kiện dưới đây quyết định extension có *chạy* hay không, và không cái nào bị chặn lúc cài:
+
+1. **`background.service_worker` là án tử.** Nạp không lỗi, không bao giờ khởi động. Phải là
+   `background.scripts` + `persistent: false`. Đây là dạng mà gần như mọi extension MV3 trên Chrome Web
+   Store đang dùng — xem mục riêng bên dưới. Installer **chưa** phát hiện việc này (R-18).
+2. **`declarativeNetRequest` cài rule được nhưng không chặn gì.** Một extension chặn quảng cáo thuần
+   MV3/DNR sẽ cài thành công, hiện đủ quyền, và không làm gì cả (R-21).
+3. **Popup và options page chưa có.** App trả `actionPopupUnsupported`, nên extension nào chỉ điều
+   khiển được qua popup thì coi như không có UI.
+
+Nói cách khác: cửa cài kiểm tra tính an toàn và nguồn gốc của *gói*. Nó không hứa gì về việc extension
+sẽ hoạt động, và hiện tại chưa có lời cảnh báo nào trong app về ba điều trên.
+
 ## Hai cảnh báo bắt buộc đọc
 
 **1. Đây là simulator, không phải thiết bị thật.** DECISIONS §4.2.10 nói rõ kết quả simulator là smoke

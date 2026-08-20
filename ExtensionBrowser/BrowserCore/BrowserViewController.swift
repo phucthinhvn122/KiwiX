@@ -8,6 +8,9 @@ final class BrowserViewController: UIViewController {
     private let historyStore: HistoryStore
     private let downloadCoordinator: DownloadCoordinator
     private let faviconService: FaviconService
+    /// Absent when the scene could not build an extension host, which is how the menu entry
+    /// disappears instead of leading to a screen that cannot install anything.
+    private let extensionCoordinator: ExtensionInstallCoordinator?
 
     private let webContentContainer = UIView()
     private let toolbar = UIView()
@@ -40,13 +43,15 @@ final class BrowserViewController: UIViewController {
         settingsStore: BrowserSettingsStore? = nil,
         historyStore: HistoryStore? = nil,
         downloadCoordinator: DownloadCoordinator? = nil,
-        faviconService: FaviconService? = nil
+        faviconService: FaviconService? = nil,
+        extensionCoordinator: ExtensionInstallCoordinator? = nil
     ) {
         self.tabManager = tabManager ?? TabManager()
         self.settingsStore = settingsStore ?? .shared
         self.historyStore = historyStore ?? HistoryStore()
         self.downloadCoordinator = downloadCoordinator ?? DownloadCoordinator()
         self.faviconService = faviconService ?? FaviconService()
+        self.extensionCoordinator = extensionCoordinator
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -515,12 +520,22 @@ final class BrowserViewController: UIViewController {
         let downloads = UIAction(title: "Downloads", image: UIImage(systemName: "arrow.down.circle")) { [weak self] _ in
             self?.showDownloads()
         }
+        var tools: [UIMenuElement] = [history, downloads]
+        if extensionCoordinator != nil {
+            tools.append(
+                UIAction(title: "Extensions", image: UIImage(systemName: "puzzlepiece.extension")) { [weak self] _ in
+                    self?.showExtensions()
+                }
+            )
+        }
+        tools.append(settings)
+
         var children: [UIMenuElement] = [
             reload,
             share,
             openExternal,
             UIMenu(options: .displayInline, children: [newTab, privateTab, close]),
-            UIMenu(options: .displayInline, children: [history, downloads, settings])
+            UIMenu(options: .displayInline, children: tools)
         ]
 
         #if DEBUG
@@ -630,6 +645,36 @@ final class BrowserViewController: UIViewController {
         let navigation = UINavigationController(rootViewController: downloads)
         navigation.modalPresentationStyle = .formSheet
         present(navigation, animated: true)
+    }
+
+    private func showExtensions() {
+        presentExtensions(importing: nil)
+    }
+
+    /// A package another app opened in KiwiX. Goes through the same screen and the same consent
+    /// sheet as one picked from Files — arriving by share sheet grants nothing extra.
+    func presentExtensionInstall(fileURL: URL) {
+        presentExtensions(importing: fileURL)
+    }
+
+    private func presentExtensions(importing fileURL: URL?) {
+        guard let extensionCoordinator else { return }
+        let extensions = ExtensionsViewController(coordinator: extensionCoordinator)
+        if let fileURL {
+            extensions.importOnAppearance(fileURL: fileURL)
+        }
+        let navigation = UINavigationController(rootViewController: extensions)
+        navigation.modalPresentationStyle = .formSheet
+
+        guard presentedViewController != nil else {
+            present(navigation, animated: true)
+            return
+        }
+        // An incoming file arrives whatever is on screen, including the tab switcher or another
+        // sheet. Whatever it is loses; presenting on top of it would silently do nothing.
+        dismiss(animated: false) { [weak self] in
+            self?.present(navigation, animated: true)
+        }
     }
 
     #if DEBUG

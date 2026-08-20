@@ -168,9 +168,9 @@ final class AddressFieldRenderingTests: XCTestCase {
             named: "\(label)-dump"
         )
 
-        return hierarchyReading.ink + hierarchyReading.faintInk >= layerReading.ink + layerReading.faintInk
-            ? hierarchyReading
-            : layerReading
+        let hierarchyMarks: Int = hierarchyReading.ink + hierarchyReading.faintInk
+        let layerMarks: Int = layerReading.ink + layerReading.faintInk
+        return hierarchyMarks >= layerMarks ? hierarchyReading : layerReading
     }
 
     private func crop(_ image: UIImage, to rect: CGRect) throws -> UIImage {
@@ -206,38 +206,48 @@ final class AddressFieldRenderingTests: XCTestCase {
             }
             return String(format: "r%.3f g%.3f b%.3f a%.3f", red, green, blue, alpha)
         }
-        return """
-        bounds              \(bounds)
-        frame               \(field.frame)
-        textRect            \(field.textRect(forBounds: bounds))
-        editingRect         \(field.editingRect(forBounds: bounds))
-        placeholderRect     \(field.placeholderRect(forBounds: bounds))
-        leftViewRect        \(field.leftViewRect(forBounds: bounds))
-        rightViewRect       \(field.rightViewRect(forBounds: bounds))
-        clearButtonRect     \(field.clearButtonRect(forBounds: bounds))
-        borderRect          \(field.borderRect(forBounds: bounds))
-        leftView            \(String(describing: field.leftView?.frame)) mode \(field.leftViewMode.rawValue)
-        rightView           \(String(describing: field.rightView?.frame)) mode \(field.rightViewMode.rawValue)
-        font                \(String(describing: field.font))
-        adjustsForCategory  \(field.adjustsFontForContentSizeCategory)
-        textColor           \(rgba(field.textColor))
-        backgroundColor     \(rgba(field.backgroundColor))
-        tintColor           \(rgba(field.tintColor))
-        text                \(String(describing: field.text))
-        placeholder         \(String(describing: field.placeholder))
-        attributedText      \(String(describing: field.attributedText?.string))
-        borderStyle         \(field.borderStyle.rawValue)
-        textAlignment       \(field.textAlignment.rawValue)
-        alpha / hidden      \(field.alpha) / \(field.isHidden)
-        clipsToBounds       \(field.clipsToBounds)
-        isSecureTextEntry   \(field.isSecureTextEntry)
-        isEnabled           \(field.isEnabled)
-        contentVertAlign    \(field.contentVerticalAlignment.rawValue)
-        interfaceStyle      \(traits.userInterfaceStyle.rawValue)
-        contentSizeCategory \(traits.preferredContentSizeCategory.rawValue)
-        displayScale        \(traits.displayScale)
-        subviews            \(field.subviews.map { "\(type(of: $0))\($0.frame)" }.joined(separator: " "))
-        """
+        // Built line by line on purpose. As one multi-line literal with twenty-odd interpolations
+        // this is a single expression, and that is exactly the shape that made the Swift
+        // type-checker time out and fail a build in this same commit's first attempt.
+        var lines = [String]()
+        func row(_ label: String, _ value: String) {
+            lines.append(label.padding(toLength: 20, withPad: " ", startingAt: 0) + value)
+        }
+        row("bounds", "\(bounds)")
+        row("frame", "\(field.frame)")
+        row("textRect", "\(field.textRect(forBounds: bounds))")
+        row("editingRect", "\(field.editingRect(forBounds: bounds))")
+        row("placeholderRect", "\(field.placeholderRect(forBounds: bounds))")
+        row("leftViewRect", "\(field.leftViewRect(forBounds: bounds))")
+        row("rightViewRect", "\(field.rightViewRect(forBounds: bounds))")
+        row("clearButtonRect", "\(field.clearButtonRect(forBounds: bounds))")
+        row("borderRect", "\(field.borderRect(forBounds: bounds))")
+        row("leftView", "\(String(describing: field.leftView?.frame)) mode \(field.leftViewMode.rawValue)")
+        row("rightView", "\(String(describing: field.rightView?.frame)) mode \(field.rightViewMode.rawValue)")
+        row("font", "\(String(describing: field.font))")
+        row("adjustsForCategory", "\(field.adjustsFontForContentSizeCategory)")
+        row("textColor", rgba(field.textColor))
+        row("backgroundColor", rgba(field.backgroundColor))
+        row("tintColor", rgba(field.tintColor))
+        row("text", "\(String(describing: field.text))")
+        row("placeholder", "\(String(describing: field.placeholder))")
+        row("attributedText", "\(String(describing: field.attributedText?.string))")
+        row("borderStyle", "\(field.borderStyle.rawValue)")
+        row("textAlignment", "\(field.textAlignment.rawValue)")
+        row("alpha", "\(field.alpha)")
+        row("isHidden", "\(field.isHidden)")
+        row("clipsToBounds", "\(field.clipsToBounds)")
+        row("isSecureTextEntry", "\(field.isSecureTextEntry)")
+        row("isEnabled", "\(field.isEnabled)")
+        row("contentVertAlign", "\(field.contentVerticalAlignment.rawValue)")
+        row("interfaceStyle", "\(traits.userInterfaceStyle.rawValue)")
+        row("contentSizeCategory", "\(traits.preferredContentSizeCategory.rawValue)")
+        row("displayScale", "\(traits.displayScale)")
+        for subview in field.subviews {
+            let kind = "\(type(of: subview))"
+            row("  subview", kind + " frame \(subview.frame) hidden \(subview.isHidden) alpha \(subview.alpha)")
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func attach(_ text: String, named name: String) {

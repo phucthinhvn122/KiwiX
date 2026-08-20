@@ -17,6 +17,9 @@ enum ScreenInk {
     /// shipping either.
     static let inkThreshold: CGFloat = 0.25
 
+    /// Anything at all, as opposed to anything readable.
+    static let faintThreshold: CGFloat = 2.0 / 255.0
+
     /// Everything the pixels can say about one image, in one pass.
     ///
     /// `ink` alone answers "was anything drawn". When the answer is no, `distinctColours` and
@@ -58,9 +61,9 @@ enum ScreenInk {
         for pixel in pixels {
             let distance = abs(pixel.luminance - background)
             if distance > inkThreshold { ink += 1 }
-            // 2/255 is a hair above the rounding noise a bitmap context introduces, so this catches
+            // A hair above the rounding noise a bitmap context introduces, so this catches
             // dark-on-dark text that the main threshold is deliberately blind to.
-            if distance > 2.0 / 255.0 { faint += 1 }
+            if distance > faintThreshold { faint += 1 }
             colours.insert(pixel.packed)
         }
         return Reading(
@@ -101,43 +104,55 @@ enum ScreenInk {
         guard width > 0, height > 0 else { throw InkError.emptyImage }
 
         var buffer = [UInt8](repeating: 0, count: width * height * 4)
-        // Drawing and reading both happen inside the closure: the pointer handed out here stops
-        // being valid the moment it returns, so the CGContext must not outlive it.
-        let result: [Sample]? = buffer.withUnsafeMutableBytes { raw -> [Sample]? in
-            guard let base = raw.baseAddress,
-                  let context = CGContext(
-                      data: base,
-                      width: width,
-                      height: height,
-                      bitsPerComponent: 8,
-                      bytesPerRow: width * 4,
-                      space: CGColorSpaceCreateDeviceRGB(),
-                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-                  )
-            else {
-                return nil
-            }
+        // Only the drawing happens against the raw pointer, which stops being valid the moment the
+        // closure returns. The pixels it wrote stay in `buffer`, so everything else reads that.
+        let drawn: Bool = buffer.withUnsafeMutableBytes { raw -> Bool in
+            guard let base = raw.baseAddress else { return false }
+            let context = CGContext(
+                data: base,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+            guard let context else { return false }
             context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
-
-            let bytes = raw.bindMemory(to: UInt8.self)
-            var samples = [Sample]()
-            samples.reserveCapacity(width * height)
-            for index in stride(from: 0, to: bytes.count, by: 4) {
-                let red = bytes[index]
-                let green = bytes[index + 1]
-                let blue = bytes[index + 2]
-                // Rec. 709 weights, on sRGB values without linearising them. This is a distance
-                // measure for "is anything drawn here", not a WCAG contrast claim —
-                // BrowserChromeAppearanceTests makes that claim properly, on colours not pixels.
-                let luminance = (0.2126 * CGFloat(red) + 0.7152 * CGFloat(green) + 0.0722 * CGFloat(blue)) / 255
-                let packed = UInt32(red) << 16 | UInt32(green) << 8 | UInt32(blue)
-                samples.append(Sample(packed: packed, luminance: luminance))
-            }
-            return samples
+            return true
         }
+        guard drawn else { throw InkError.noContext }
 
-        guard let result else { throw InkError.noContext }
+        var result = [Sample]()
+        result.reserveCapacity(width * height)
+        var index = 0
+        while index + 2 < buffer.count {
+            let red = buffer[index]
+            let green = buffer[index + 1]
+            let blue = buffer[index + 2]
+            result.append(Sample(packed: pack(red, green, blue), luminance: luminance(red, green, blue)))
+            index += 4
+        }
         return (result, width, height)
+    }
+
+    /// Rec. 709 weights, on sRGB values without linearising them. This is a distance measure for "is
+    /// anything drawn here", not a WCAG contrast claim — `BrowserChromeAppearanceTests` makes that
+    /// claim properly, on colours rather than pixels.
+    ///
+    /// Every step is typed. Written as one mixed-literal expression inline, this is the line that
+    /// made the Swift type-checker give up and fail the build.
+    private static func luminance(_ red: UInt8, _ green: UInt8, _ blue: UInt8) -> CGFloat {
+        let scaledRed: CGFloat = 0.2126 * CGFloat(red)
+        let scaledGreen: CGFloat = 0.7152 * CGFloat(green)
+        let scaledBlue: CGFloat = 0.0722 * CGFloat(blue)
+        return (scaledRed + scaledGreen + scaledBlue) / 255.0
+    }
+
+    private static func pack(_ red: UInt8, _ green: UInt8, _ blue: UInt8) -> UInt32 {
+        let high: UInt32 = UInt32(red) << 16
+        let mid: UInt32 = UInt32(green) << 8
+        return high | mid | UInt32(blue)
     }
 
     /// The most common luminance, to 64 buckets. A text field is overwhelmingly its own background,

@@ -110,6 +110,21 @@ final class AddressFieldRenderingTests: XCTestCase {
 
         XCTAssertGreaterThan(font.pointSize, 8, "Font is \(font.pointSize)pt — too small to read.")
         XCTAssertGreaterThan(field.bounds.width, 200, "The field itself is only \(field.bounds.width)pt wide.")
+
+        // The overlay views get their own assertions because this is how the bar broke: the
+        // magnifying-glass container grew to the field's full width and squeezed the text rect to
+        // 0pt. Asserting on the overlays means the next failure names the culprit, not the symptom.
+        let leftRect = field.leftViewRect(forBounds: field.bounds)
+        let rightRect = field.rightViewRect(forBounds: field.bounds)
+        XCTAssertLessThan(
+            leftRect.width, 80,
+            "The left overlay takes \(leftRect.width)pt of a \(field.bounds.width)pt field, leaving nothing for text."
+        )
+        XCTAssertLessThan(
+            rightRect.width, 80,
+            "The right overlay takes \(rightRect.width)pt of a \(field.bounds.width)pt field, leaving nothing for text."
+        )
+
         XCTAssertGreaterThan(textRect.width, 100, "The resting text rect is \(textRect) — no room for text.")
         XCTAssertGreaterThan(textRect.height, 10, "The resting text rect is \(textRect) — no room for text.")
         XCTAssertGreaterThan(editingRect.width, 100, "The editing text rect is \(editingRect).")

@@ -239,11 +239,17 @@ final class BrowserViewController: UIViewController {
         addressIconView.tintColor = .secondaryLabel
         addressIconView.contentMode = .scaleAspectFit
         addressIconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)
-        let addressIconContainer = UIView(frame: CGRect(x: 0, y: 0, width: 46, height: 42))
+        // AddressAccessoryView, not a plain UIView: a plain one reports no intrinsic size, and the
+        // field responds by handing the overlay its entire width, which leaves the text rect 0pt
+        // wide and the address bar unable to draw a single character. See AddressAccessoryView.
+        let addressIconContainer = AddressAccessoryView(size: CGSize(width: 46, height: 42))
         addressIconContainer.isUserInteractionEnabled = false
         addressIconContainer.addSubview(addressIconView)
         NSLayoutConstraint.activate([
             addressIconView.leadingAnchor.constraint(equalTo: addressIconContainer.leadingAnchor, constant: 14),
+            // The trailing pin is what makes the container's width follow from its content instead
+            // of being left for the layout engine to guess at.
+            addressIconContainer.trailingAnchor.constraint(equalTo: addressIconView.trailingAnchor, constant: 12),
             addressIconView.centerYAnchor.constraint(equalTo: addressIconContainer.centerYAnchor),
             addressIconView.widthAnchor.constraint(equalToConstant: 20),
             addressIconView.heightAnchor.constraint(equalToConstant: 20)
@@ -255,13 +261,18 @@ final class BrowserViewController: UIViewController {
         reloadButton.tintColor = .secondaryLabel
         reloadButton.accessibilityLabel = "Reload"
         reloadButton.addTarget(self, action: #selector(reloadOrStop), for: .touchUpInside)
-        let reloadContainer = UIView(frame: CGRect(x: 0, y: 0, width: 44, height: 42))
+        let reloadContainer = AddressAccessoryView(size: CGSize(width: 44, height: 42))
         reloadContainer.addSubview(reloadButton)
         NSLayoutConstraint.activate([
             reloadButton.centerXAnchor.constraint(equalTo: reloadContainer.centerXAnchor),
             reloadButton.centerYAnchor.constraint(equalTo: reloadContainer.centerYAnchor),
             reloadButton.widthAnchor.constraint(equalToConstant: 36),
-            reloadButton.heightAnchor.constraint(equalToConstant: 36)
+            reloadButton.heightAnchor.constraint(equalToConstant: 36),
+            // Same reason as the icon container: centring a button inside a view says nothing about
+            // how wide that view is, so the overlay is free to grow and eat the text rect the moment
+            // the field stops editing and puts it on screen. Width only - the field pins the
+            // overlay's top and bottom itself, so a height constraint here would fight it.
+            reloadContainer.widthAnchor.constraint(equalToConstant: 44)
         ])
         addressField.rightView = reloadContainer
         addressField.rightViewMode = .unlessEditing

@@ -20,8 +20,19 @@ CI run `32344527822`: **140 test, 0 failure**.
 > màu — nền, viền focus, và màu pha giữa hai cái đó. Lúc nghỉ thì cả placeholder cũng không vẽ. Tức là
 > **không có glyph nào được vẽ, màu gì cũng không**, nên nguyên nhân không thể là `textColor`:
 > placeholder do UIKit tự tô màu, `textColor` không đụng tới nó được. Phân tích bên dưới về `textColor`
-> vẫn đúng như một thiếu sót thật sự trong code, nhưng nó **không phải** nguyên nhân của lỗi. Nguyên
-> nhân thật vẫn chưa biết và đang được đo, không đoán — xem R-23 trong `RISKS.md`.
+> vẫn đúng như một thiếu sót thật sự trong code, nhưng nó **không phải** nguyên nhân của lỗi.
+>
+> **Nguyên nhân thật, đo được ở run `32350978946`:** `leftView` (hộp chứa kính lúp) nở ra bằng đúng
+> chiều rộng cả ô, nên `leftViewRect` trả về toàn bộ bounds và `textRect`/`editingRect` còn **0pt**:
+>
+> ```
+> bounds        (0, 0, 305.67, 44)
+> leftViewRect  (0, 0, 305.67, 44)
+> textRect      (305.67, 0, 0, 44)
+> ```
+>
+> Canvas rộng 0pt thì không vẽ được chữ, placeholder hay con trỏ — trong khi nền, viền và nút clear
+> (đặt từ mép phải) vẫn vẽ bình thường, khớp đúng từng pixel đã đếm. Xem R-23 trong `RISKS.md`.
 
 
 `addressField` **chưa bao giờ được gán `textColor`**. Không có dòng nào, ở bất kỳ đâu trong repo:

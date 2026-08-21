@@ -195,10 +195,15 @@ actor InstalledExtensionStore {
             } catch {
                 throw InstalledExtensionStoreError.catalogTooLarge
             }
+            // A record carries *two* bounded lists — permissions and match patterns — plus its own
+            // keys, so the budget has to be `2 × entries + overhead` per extension. Counting one
+            // list put the ceiling at half of what `normalized(_:)` accepts: a catalog this store
+            // had itself written could fail preflight on the next launch, get quarantined, and take
+            // every installed extension with it while leaving the unpacked files as orphans.
+            let tokensPerRecord = SafePersistence.maximumGrantedEntryCount * 2 + 32
             try BoundedJSONPreflight.validate(
                 data,
-                maximumStructuralTokens: SafePersistence.maximumInstalledExtensionCount
-                    * SafePersistence.maximumGrantedEntryCount
+                maximumStructuralTokens: SafePersistence.maximumInstalledExtensionCount * tokensPerRecord
             )
             let catalog = try decoder.decode(InstalledExtensionCatalog.self, from: data)
             guard catalog.schemaVersion == InstalledExtensionCatalog.currentSchemaVersion else {

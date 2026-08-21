@@ -32,7 +32,9 @@ final class TabManager {
         }
     }
 
-    static let defaultMaximumTabCount = SafePersistence.maximumTabCount
+    // `nonisolated`: it is an immutable `Int` on a `@MainActor` type, and it is read from a
+    // default argument, which is evaluated in the caller's context rather than this one.
+    nonisolated static let defaultMaximumTabCount = SafePersistence.maximumTabCount
     weak var delegate: TabManagerDelegate?
 
     /// Outbound port to the WebExtension host (M2). Nil until a host attaches, and nil in every

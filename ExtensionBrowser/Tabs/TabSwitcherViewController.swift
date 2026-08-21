@@ -108,7 +108,7 @@ final class TabSwitcherViewController: UIViewController {
             )
             let group = NSCollectionLayoutGroup.horizontal(
                 layoutSize: groupSize,
-                subitem: item,
+                repeatingSubitem: item,
                 count: columnCount
             )
             let section = NSCollectionLayoutSection(group: group)

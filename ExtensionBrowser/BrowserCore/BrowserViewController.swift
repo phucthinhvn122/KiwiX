@@ -399,24 +399,42 @@ final class BrowserViewController: UIViewController {
         tabManager.loadInitialPageIfNeeded(for: tab.id)
     }
 
+    /// - Note: the change handler `observe(_:options:changeHandler:)` takes is `@Sendable`, so the
+    ///   body cannot touch this controller's state without saying which actor it is on. It is the
+    ///   main one: `estimatedProgress`, `canGoBack`, `canGoForward` and `isLoading` are main-thread
+    ///   properties of `WKWebView`, WebKit mutates them there, and KVO delivers synchronously on the
+    ///   thread that mutated. `assumeIsolated` records that fact; hopping with `Task { @MainActor }`
+    ///   instead would put the progress bar and the back/forward buttons a runloop turn behind the
+    ///   change they describe, and could reorder two notifications that arrived in the same turn.
+    ///
+    ///   The observed object arrives as the closure's first argument, which is why there is no
+    ///   `weak webView` capture: the argument is the view that actually changed.
     private func attachWebViewObservations(to webView: WKWebView) {
         webViewObservations = [
-            webView.observe(\.estimatedProgress, options: [.initial, .new]) { [weak self, weak webView] _, _ in
-                guard let self, let webView, webView === self.displayedWebView else { return }
-                self.updateProgress(for: webView)
+            webView.observe(\.estimatedProgress, options: [.initial, .new]) { [weak self] observed, _ in
+                MainActor.assumeIsolated {
+                    guard let self, observed === self.displayedWebView else { return }
+                    self.updateProgress(for: observed)
+                }
             },
-            webView.observe(\.canGoBack, options: [.initial, .new]) { [weak self, weak webView] _, _ in
-                guard let self, let webView, webView === self.displayedWebView else { return }
-                self.updateControls()
+            webView.observe(\.canGoBack, options: [.initial, .new]) { [weak self] observed, _ in
+                MainActor.assumeIsolated {
+                    guard let self, observed === self.displayedWebView else { return }
+                    self.updateControls()
+                }
             },
-            webView.observe(\.canGoForward, options: [.initial, .new]) { [weak self, weak webView] _, _ in
-                guard let self, let webView, webView === self.displayedWebView else { return }
-                self.updateControls()
+            webView.observe(\.canGoForward, options: [.initial, .new]) { [weak self] observed, _ in
+                MainActor.assumeIsolated {
+                    guard let self, observed === self.displayedWebView else { return }
+                    self.updateControls()
+                }
             },
-            webView.observe(\.isLoading, options: [.initial, .new]) { [weak self, weak webView] _, _ in
-                guard let self, let webView, webView === self.displayedWebView else { return }
-                self.updateProgress(for: webView)
-                self.updateControls()
+            webView.observe(\.isLoading, options: [.initial, .new]) { [weak self] observed, _ in
+                MainActor.assumeIsolated {
+                    guard let self, observed === self.displayedWebView else { return }
+                    self.updateProgress(for: observed)
+                    self.updateControls()
+                }
             }
         ]
     }

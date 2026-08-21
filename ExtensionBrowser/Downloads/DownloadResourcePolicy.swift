@@ -45,11 +45,11 @@ final class ActiveDownloadRegistry: @unchecked Sendable {
     private var identifiers: Set<UUID> = []
 
     func insert(_ identifier: UUID) {
-        lock.withLock { identifiers.insert(identifier) }
+        lock.withLock { _ = identifiers.insert(identifier) }
     }
 
     func remove(_ identifier: UUID) {
-        lock.withLock { identifiers.remove(identifier) }
+        lock.withLock { _ = identifiers.remove(identifier) }
     }
 
     func removeAll() {

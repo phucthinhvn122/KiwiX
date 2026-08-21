@@ -4,8 +4,10 @@ import UIKit
 final class SettingsViewController: UITableViewController {
     private let settingsStore: BrowserSettingsStore
 
-    init(settingsStore: BrowserSettingsStore = .shared) {
-        self.settingsStore = settingsStore
+    // Resolved in the body, not in a default argument: `.shared` is `@MainActor` and a default
+    // argument is evaluated in the caller's context, which need not be this actor.
+    init(settingsStore: BrowserSettingsStore? = nil) {
+        self.settingsStore = settingsStore ?? .shared
         super.init(style: .insetGrouped)
         title = "Settings"
     }

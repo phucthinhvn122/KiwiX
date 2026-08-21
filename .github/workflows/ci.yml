@@ -94,6 +94,22 @@ jobs:
       - name: Check built binary for private API
         run: bash scripts/check_private_api.sh --binary "build/simulator/Build/Products/Release-iphonesimulator/ExtensionBrowser.app/ExtensionBrowser"
 
+      # Read back out of the product, not out of project.yml. TARGETED_DEVICE_FAMILY was set in the
+      # project-level settings block, where XcodeGen's own per-target copy overrode it, and both the
+      # IPA and the simulator app shipped as iPhone+iPad while the spec file said iPhone. Nothing
+      # failed, because nothing was looking. The tab switcher's two- and three-column layouts and
+      # every UI test are iPhone-only, so an iPad install runs paths no one has ever seen.
+      - name: Verify the built app is iPhone-only
+        run: |
+          set -euo pipefail
+          plist="build/simulator/Build/Products/Release-iphonesimulator/ExtensionBrowser.app/Info.plist"
+          families="$(/usr/bin/plutil -extract UIDeviceFamily json -o - "${plist}")"
+          echo "UIDeviceFamily = ${families}"
+          if [[ "${families}" != "[1]" ]]; then
+            echo "::error::project.yml asks for iPhone only (TARGETED_DEVICE_FAMILY=1) but the built app declares UIDeviceFamily ${families}"
+            exit 1
+          fi
+
       - name: Run M0 benchmark
         env:
           DESTINATION: platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}

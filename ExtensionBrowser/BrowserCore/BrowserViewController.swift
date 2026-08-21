@@ -78,6 +78,13 @@ final class BrowserViewController: UIViewController {
             object: nil
         )
 
+        // Startup reconciliation, which is where interrupted transfers are failed and hidden
+        // `.kiwix-<uuid>.partial` orphans are deleted. Nothing else calls it at launch: the only
+        // other callers are the Downloads screen appearing and its pull-to-refresh, so a partial
+        // left behind by a crash survived until the user happened to open that screen — and if they
+        // never did, forever.
+        downloadCoordinator.reload()
+
         Task { [weak self] in
             await self?.tabManager.restoreSession()
         }
@@ -1189,13 +1196,25 @@ extension BrowserViewController: WKNavigationDelegate {
             return
         }
         let tab = tabManager.tab(containing: webView)
-        guard let message = downloadCoordinator.confirmationMessage(
+        // A download for the main frame is the page the user is looking at handing them a file. One
+        // for a subframe is an embedded document they may not know exists — a hidden iframe pointed
+        // at any non-renderable resource writes a file into Documents/Downloads with no click, no
+        // prompt and nothing on screen, because the branch below is silent whenever the size and
+        // privacy checks have nothing to say. It is not blocked outright: subframe downloads are a
+        // real pattern. It is made visible, which is the part that was missing.
+        let confirmation = downloadCoordinator.confirmationMessage(
             expectedBytes: expectedBytes,
             isPrivate: tab?.isPrivate == true
-        ) else {
+        )
+        let subframeNotice = navigationResponse.isForMainFrame
+            ? nil
+            : "This file was requested by content embedded in the page rather than by the page itself."
+        let combined = [subframeNotice, confirmation].compactMap { $0 }.joined(separator: "\n\n")
+        guard !combined.isEmpty else {
             decisionHandler(.download)
             return
         }
+        let message = combined
         guard tab?.id == tabManager.selectedTabID,
               webView === displayedWebView,
               UIApplication.shared.applicationState == .active,

@@ -4,6 +4,9 @@ import UIKit
 final class DownloadsViewController: UITableViewController, UIDocumentInteractionControllerDelegate {
     private let coordinator: DownloadCoordinator
     private var items: [DownloadItem] = []
+    /// Which rows exist and what state each is in, as of the last render. Progress is deliberately
+    /// not part of it — that is the thing that changes four times a second without moving a row.
+    private var listComposition: [String] = []
     private var documentInteractionController: UIDocumentInteractionController?
 
     init(coordinator: DownloadCoordinator) {
@@ -38,8 +41,20 @@ final class DownloadsViewController: UITableViewController, UIDocumentInteractio
 
         coordinator.onItemsChanged = { [weak self] items in
             guard let self else { return }
+            // The progress poller fires this every 0.25 s for the whole life of a transfer, and a
+            // full `reloadData()` at that rate takes the table apart under the user: a half-open
+            // swipe action closes, a highlighted row loses its highlight, VoiceOver focus jumps back
+            // to the top and scroll momentum stops. Only the composition of the list needs a reload;
+            // bytes moving is a redraw of rows that are already on screen.
+            let composition = items.map { "\($0.id.uuidString)|\($0.status.rawValue)" }
+            let unchanged = composition == self.listComposition
+            self.listComposition = composition
             self.items = items
-            self.tableView.reloadData()
+            if unchanged {
+                self.reconfigureVisibleRows()
+            } else {
+                self.tableView.reloadData()
+            }
             self.refreshControl?.endRefreshing()
             self.updateEmptyState()
             self.navigationItem.rightBarButtonItem?.isEnabled = items.contains { $0.status.isFinished }
@@ -108,6 +123,16 @@ final class DownloadsViewController: UITableViewController, UIDocumentInteractio
         let configuration = UISwipeActionsConfiguration(actions: actions)
         configuration.performsFirstActionWithFullSwipe = false
         return configuration
+    }
+
+    /// Redraws the rows that are on screen without disturbing the table around them.
+    private func reconfigureVisibleRows() {
+        guard let visible = tableView.indexPathsForVisibleRows else { return }
+        for indexPath in visible where indexPath.row < items.count {
+            guard let cell = tableView.cellForRow(at: indexPath) as? DownloadTableViewCell else { continue }
+            let item = items[indexPath.row]
+            cell.configure(with: item, canOpen: coordinator.openableFileURL(for: item.id) != nil)
+        }
     }
 
     @objc private func reload() {

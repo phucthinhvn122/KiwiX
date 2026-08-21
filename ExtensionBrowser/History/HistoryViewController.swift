@@ -5,6 +5,7 @@ final class HistoryViewController: UITableViewController {
     private let store: HistoryStore
     private let onOpen: (URL) -> Void
     private var entries: [HistoryEntry] = []
+    private static let cellIdentifier = "HistoryCell"
     private let relativeDateFormatter = RelativeDateTimeFormatter()
     private var reloadGeneration = 0
 
@@ -23,6 +24,10 @@ final class HistoryViewController: UITableViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         tableView.backgroundColor = KiwiTheme.canvas
+        // Registered so rows recycle. `UITableViewCell(style:reuseIdentifier: nil)` per row means
+        // a fresh cell, a fresh content configuration and a fresh layout pass for every one of up
+        // to 2,000 entries the user scrolls past, and none of them are ever reused.
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: HistoryViewController.cellIdentifier)
         navigationItem.largeTitleDisplayMode = .always
         navigationItem.leftBarButtonItem = UIBarButtonItem(
             barButtonSystemItem: .done,
@@ -49,8 +54,11 @@ final class HistoryViewController: UITableViewController {
         cellForRowAt indexPath: IndexPath
     ) -> UITableViewCell {
         let entry = entries[indexPath.row]
-        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
-        var content = cell.defaultContentConfiguration()
+        let cell = tableView.dequeueReusableCell(
+            withIdentifier: HistoryViewController.cellIdentifier,
+            for: indexPath
+        )
+        var content = UIListContentConfiguration.subtitleCell()
         content.text = entry.title
         content.secondaryText = "\(SafeInput.displayHost(for: entry.url, fallback: entry.url.absoluteString)) · \(relativeDateFormatter.localizedString(for: entry.visitedAt, relativeTo: Date()))"
         content.secondaryTextProperties.numberOfLines = 2

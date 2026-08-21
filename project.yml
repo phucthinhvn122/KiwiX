@@ -15,7 +15,13 @@ configs:
 packages:
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation.git
-    exactVersion: 0.9.20
+    # Pinned by commit, not by tag. `exactVersion: 0.9.20` resolves a git tag, and a tag can be
+    # moved; the resolution that would otherwise record which commit it meant lives in
+    # Package.resolved, which sits inside the generated .xcodeproj and is therefore gitignored and
+    # never committed. So every CI run re-resolved the tag from scratch with nothing to compare it
+    # against. This is the commit 0.9.20 pointed at:
+    #   git rev-parse 0.9.20^{commit} -> 22787ffb59de99e5dc1fbfe80b19c97a904ad48d
+    revision: 22787ffb59de99e5dc1fbfe80b19c97a904ad48d
 
 settings:
   base:

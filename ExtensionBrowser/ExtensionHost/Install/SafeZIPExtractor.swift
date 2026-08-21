@@ -81,20 +81,22 @@ public struct SafeZIPExtractor: Sendable {
         }
 
         try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true, attributes: nil)
+        // Bytes that have actually landed on disk, as opposed to bytes the archive says it holds.
+        var extractedBytes: UInt64 = 0
         for item in validated.sorted(by: { $0.path < $1.path }) {
             let targetURL = try Self.containedDestination(for: item.path, under: destinationURL)
             switch item.entry.type {
             case .directory:
                 try fileManager.createDirectory(at: targetURL, withIntermediateDirectories: true, attributes: nil)
             case .file:
-                let checksum: CRC32
-                do {
-                    checksum = try archive.extract(item.entry, to: targetURL, bufferSize: 64 * 1_024, skipCRC32: false)
-                } catch Archive.ArchiveError.cancelledOperation {
-                    throw ExtensionInstallError.cancelled
-                } catch {
-                    throw ExtensionInstallError.extractionFailed(path: item.path)
-                }
+                let checksum = try write(
+                    item.entry,
+                    path: item.path,
+                    from: archive,
+                    to: targetURL,
+                    alreadyExtracted: &extractedBytes,
+                    fileManager: fileManager
+                )
                 guard checksum == item.entry.checksum else {
                     throw ExtensionInstallError.checksumMismatch(item.path)
                 }
@@ -108,6 +110,78 @@ public struct SafeZIPExtractor: Sendable {
                 throw ExtensionInstallError.unsupportedEntry(item.path)
             }
         }
+    }
+
+    /// Writes one entry out, counting the bytes that actually arrive.
+    ///
+    /// `Archive.extract(_:to:)` was doing this, and it bounds nothing. For a `.deflate` entry
+    /// ZIPFoundation limits only how much *compressed* input it pulls from the file — `readCompressed`
+    /// passes `effectiveCompressedSize` to the provider — and hands every inflated chunk straight to
+    /// its consumer, which in the `to:` overload is a write. (`readUncompressed` does bound by the
+    /// declared size, so a stored entry was never the problem.)
+    ///
+    /// Meanwhile every budget in `extract` above is computed from `uncompressedSize` and
+    /// `compressedSize` in the central directory: numbers the archive states about itself. An entry
+    /// declaring 1 KiB uncompressed while carrying 40 MiB of deflated zeros passes the per-entry
+    /// limit, passes the running expansion total, and skips the ratio check entirely because that
+    /// one only fires above 1 MiB *declared*. The CRC would eventually catch the lie — after the
+    /// whole 40 MiB is on the volume.
+    ///
+    /// So the limits are re-applied here against real bytes, which is the only quantity an archive
+    /// cannot misreport. Nothing else changes: CRC is still computed and still compared by the caller.
+    private func write(
+        _ entry: Entry,
+        path: String,
+        from archive: Archive,
+        to targetURL: URL,
+        alreadyExtracted: inout UInt64,
+        fileManager: FileManager
+    ) throws -> CRC32 {
+        // `extract(_:to:)` created these; the consumer overload does not.
+        try fileManager.createDirectory(
+            at: targetURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        guard fileManager.createFile(atPath: targetURL.path, contents: nil) else {
+            throw ExtensionInstallError.extractionFailed(path: path)
+        }
+        let handle = try FileHandle(forWritingTo: targetURL)
+        defer { try? handle.close() }
+
+        let limits = self.limits
+        let priorBytes = alreadyExtracted
+        var entryBytes: UInt64 = 0
+
+        let checksum: CRC32
+        do {
+            checksum = try archive.extract(entry, bufferSize: 64 * 1_024, skipCRC32: false) { chunk in
+                entryBytes &+= UInt64(chunk.count)
+                guard entryBytes <= limits.maximumEntryBytes else {
+                    throw ExtensionInstallError.entryTooLarge(
+                        path: path,
+                        limit: limits.maximumEntryBytes
+                    )
+                }
+                let (combined, overflow) = priorBytes.addingReportingOverflow(entryBytes)
+                guard !overflow, combined <= limits.maximumExpandedBytes else {
+                    throw ExtensionInstallError.expandedArchiveTooLarge(
+                        limit: limits.maximumExpandedBytes
+                    )
+                }
+                try handle.write(contentsOf: chunk)
+            }
+        } catch let error as ExtensionInstallError {
+            // A budget this method enforced. Kept verbatim: "the entry is too large" and "the entry
+            // could not be extracted" are different answers and only one of them is true.
+            throw error
+        } catch Archive.ArchiveError.cancelledOperation {
+            throw ExtensionInstallError.cancelled
+        } catch {
+            throw ExtensionInstallError.extractionFailed(path: path)
+        }
+
+        alreadyExtracted = priorBytes + entryBytes
+        return checksum
     }
 
     public func copyDirectory(from sourceURL: URL, to destinationURL: URL, fileManager: FileManager = .default) throws {

@@ -85,15 +85,21 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
     func reload() {
         reloadGeneration += 1
         let generation = reloadGeneration
-        Task { [weak self, store] in
+        let liveIDs = Set(downloadsByID.keys)
+        // Serialised behind the same tail as every other store access. `reconciledItems` writes as
+        // well as reads — it fails interrupted records, deletes orphan partials and adopts untracked
+        // files, then saves — so running it off the chain let a refresh interleave with a pending
+        // `remove` or `upsert`. It reads the file before the delete lands and writes it back after,
+        // and the record the user just deleted is on disk again.
+        let previous = persistenceTail
+        persistenceTail = Task { [weak self, store, activityRegistry] in
+            await previous?.value
             do {
-                guard let self else { return }
-                let liveIDs = Set(self.downloadsByID.keys)
                 let persistedItems = try await store.reconciledItems(
                     excludingLiveIDs: liveIDs,
-                    activityRegistry: self.activityRegistry
+                    activityRegistry: activityRegistry
                 )
-                guard generation == self.reloadGeneration else { return }
+                guard let self, generation == self.reloadGeneration else { return }
                 let currentLiveIDs = Set(self.downloadsByID.keys)
                 self.itemsByID = self.itemsByID.filter { currentLiveIDs.contains($0.key) }
                 for item in persistedItems where !currentLiveIDs.contains(item.id) {

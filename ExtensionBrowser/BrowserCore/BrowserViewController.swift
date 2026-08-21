@@ -122,12 +122,13 @@ final class BrowserViewController: UIViewController {
         // be able to clear it, and a `var` captured by a `@Sendable` closure cannot be mutated.
         endBackgroundFlushAssertion()
         backgroundFlushAssertion = UIApplication.shared.beginBackgroundTask(
-            name: "kiwix.session-flush"
-        ) { [weak self] in
-            // Out of time. Ending it here is mandatory — iOS kills an app that holds an assertion
-            // past its expiration. Documented as called on the main thread.
-            MainActor.assumeIsolated { self?.endBackgroundFlushAssertion() }
-        }
+            withName: "kiwix.session-flush",
+            expirationHandler: { [weak self] in
+                // Out of time. Ending it here is mandatory — iOS kills an app that holds an
+                // assertion past its expiration. Documented as called on the main thread.
+                MainActor.assumeIsolated { self?.endBackgroundFlushAssertion() }
+            }
+        )
 
         Task { [weak self] in
             await self?.tabManager.prepareForBackground()

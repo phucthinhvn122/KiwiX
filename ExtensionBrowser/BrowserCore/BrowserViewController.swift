@@ -735,7 +735,7 @@ final class BrowserViewController: UIViewController {
     private func showDebugInfo() {
         let controller = DebugInfoViewController { [weak self] in
             guard let self else { return [:] }
-            var information = [
+            let information = [
                 "Current URL": self.tabManager.selectedTab?.isPrivate == true
                     ? "Private tab (redacted)"
                     : self.tabManager.selectedTab?.url.map { SafeInput.displayURL($0) } ?? "None",
@@ -807,6 +807,24 @@ final class BrowserViewController: UIViewController {
     private func cancelFaviconLoad(tabID: UUID) {
         faviconGenerations[tabID, default: 0] += 1
         faviconTasks.removeValue(forKey: tabID)?.cancel()
+    }
+
+    /// Drops everything keyed to a tab that no longer exists.
+    ///
+    /// The two close paths that go through this controller clean up after themselves, but they are
+    /// not the only ones: `WebExtensionTabAdapter.close`, the last-private-tab reset and the
+    /// replacement tab `TabManager.closeTab` opens all remove a tab without telling anyone which id
+    /// went. `faviconGenerations` in particular is never removed anywhere else, so it grows for the
+    /// life of the process and a favicon fetch for a closed tab keeps running against a dead web view.
+    private func discardStateForClosedTabs(liveTabIDs: Set<UUID>) {
+        // Snapshot the keys: the loop body mutates the dictionary it would otherwise be iterating.
+        for tabID in Array(faviconGenerations.keys) where !liveTabIDs.contains(tabID) {
+            faviconGenerations.removeValue(forKey: tabID)
+            faviconTasks.removeValue(forKey: tabID)?.cancel()
+            externalNavigationRateLimiter.remove(tabID: tabID)
+            webDialogRateLimiter.remove(tabID: tabID)
+            popupCreationRateLimiter.remove(tabID: tabID)
+        }
     }
 
     private func loadFavicon(for tab: Tab, in webView: WKWebView, pageURL: URL) {
@@ -929,6 +947,7 @@ extension BrowserViewController: UITextFieldDelegate {
 
 extension BrowserViewController: TabManagerDelegate {
     func tabManagerDidChangeTabs(_ manager: TabManager) {
+        discardStateForClosedTabs(liveTabIDs: Set(manager.tabs.map(\.id)))
         updateControls()
     }
 
@@ -1060,8 +1079,20 @@ extension BrowserViewController: WKNavigationDelegate {
         }
 
         let scheme = url.scheme?.lowercased() ?? ""
-        let internallySupportedSchemes = ["http", "https", "about", "file", "data", "blob"]
-        guard !internallySupportedSchemes.contains(scheme) else {
+        // `targetFrame == nil` means the navigation is opening a frame it does not have yet, which
+        // becomes a top-level document by the time anything is drawn.
+        let isTopLevelNavigation = navigationAction.targetFrame?.isMainFrame ?? true
+        if InternalNavigationPolicy.blocksTopLevelNavigation(
+            scheme: scheme,
+            isTopLevel: isTopLevelNavigation,
+            isDownload: navigationAction.shouldPerformDownload
+        ) {
+            AppLog.browser.warning("Refused a top-level \(scheme, privacy: .public): navigation")
+            decisionHandler(.cancel)
+            return
+        }
+
+        guard !InternalNavigationPolicy.isInternallySupported(scheme: scheme) else {
             guard navigationAction.shouldPerformDownload,
                   let tab = tabManager.tab(containing: webView), tab.isPrivate else {
                 decisionHandler(navigationAction.shouldPerformDownload ? .download : .allow)
@@ -1075,9 +1106,14 @@ extension BrowserViewController: WKNavigationDelegate {
                 return
             }
             let message = downloadCoordinator.confirmationMessage(expectedBytes: -1, isPrivate: true)
+            // An alert is not a promise that one of its actions runs; see WebKitDecisionOnce.
+            let decide = WebKitDecisionOnce<WKNavigationActionPolicy>(
+                fallback: .cancel,
+                handler: decisionHandler
+            )
             let alert = UIAlertController(title: "Download File?", message: message, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in decisionHandler(.cancel) })
-            alert.addAction(UIAlertAction(title: "Download", style: .default) { _ in decisionHandler(.download) })
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in decide(.cancel) })
+            alert.addAction(UIAlertAction(title: "Download", style: .default) { _ in decide(.download) })
             present(alert, animated: true)
             return
         }
@@ -1146,9 +1182,13 @@ extension BrowserViewController: WKNavigationDelegate {
             decisionHandler(.cancel)
             return
         }
+        let decide = WebKitDecisionOnce<WKNavigationResponsePolicy>(
+            fallback: .cancel,
+            handler: decisionHandler
+        )
         let alert = UIAlertController(title: "Download File?", message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in decisionHandler(.cancel) })
-        alert.addAction(UIAlertAction(title: "Download", style: .default) { _ in decisionHandler(.download) })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in decide(.cancel) })
+        alert.addAction(UIAlertAction(title: "Download", style: .default) { _ in decide(.download) })
         present(alert, animated: true)
     }
 
@@ -1232,8 +1272,12 @@ extension BrowserViewController: WKUIDelegate {
             return
         }
         let content = WebDialogPolicy.content(pageURL: frame.request.url, message: message)
+        // `alert()` has a single outcome — the page resumes either way — so the value carried here
+        // is ignored and only the call-exactly-once guarantee matters: without it a dialog dismissed
+        // from outside leaves the page suspended and WebKit trapping. See WebKitDecisionOnce.
+        let decide = WebKitDecisionOnce<Bool>(fallback: false) { _ in completionHandler() }
         let alert = UIAlertController(title: content.title, message: content.message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() })
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in decide(true) })
         present(alert, animated: true)
     }
 
@@ -1253,9 +1297,10 @@ extension BrowserViewController: WKUIDelegate {
             return
         }
         let content = WebDialogPolicy.content(pageURL: frame.request.url, message: message)
+        let decide = WebKitDecisionOnce<Bool>(fallback: false, handler: completionHandler)
         let alert = UIAlertController(title: content.title, message: content.message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(false) })
-        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in decide(false) })
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in decide(true) })
         present(alert, animated: true)
     }
 
@@ -1276,11 +1321,12 @@ extension BrowserViewController: WKUIDelegate {
             return
         }
         let content = WebDialogPolicy.content(pageURL: frame.request.url, message: prompt, defaultText: defaultText)
+        let decide = WebKitDecisionOnce<String?>(fallback: nil, handler: completionHandler)
         let alert = UIAlertController(title: content.title, message: content.message, preferredStyle: .alert)
         alert.addTextField { $0.text = content.defaultText }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(nil) })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in decide(nil) })
         alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak alert] _ in
-            completionHandler(alert?.textFields?.first?.text.map {
+            decide(alert?.textFields?.first?.text.map {
                 SafeInput.utf8Prefix($0, maximumByteCount: WebDialogPolicy.maximumDefaultTextByteCount)
             })
         })

@@ -40,7 +40,20 @@ actor HistoryStore {
               ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
               SafePersistence.isSafePersistedURL(url) else { return }
         var current = try loadEntries()
-        current.insert(HistoryEntry(title: SafePersistence.title(title), url: url, visitedAt: date), at: 0)
+        let safeTitle = SafePersistence.title(title)
+
+        // Revisiting the address that is already on top moves that row rather than adding one.
+        // Without this, a page that reloads itself — a dashboard on a timer, a redirect loop, a user
+        // holding the reload button — writes 2_000 identical rows and evicts every other site the
+        // person actually visited. The row keeps its identifier so a swipe-to-delete already in
+        // flight in `HistoryViewController` still refers to the same entry.
+        if let newest = current.first, newest.url == url {
+            current[0] = HistoryEntry(id: newest.id, title: safeTitle, url: url, visitedAt: date)
+            try saveEntries(current)
+            return
+        }
+
+        current.insert(HistoryEntry(title: safeTitle, url: url, visitedAt: date), at: 0)
         if current.count > maximumEntryCount {
             current.removeLast(current.count - maximumEntryCount)
         }
@@ -97,17 +110,26 @@ actor HistoryStore {
 
     private func saveEntries(_ entries: [HistoryEntry]) throws {
         let fileURL = try historyFileURL(createDirectory: true)
-        var lower = 0
-        var upper = min(entries.count, maximumEntryCount)
-        var best = Data("[]".utf8)
-        while lower <= upper {
-            let count = (lower + upper) / 2
-            let data = try encoder.encode(Array(entries.prefix(count)))
-            if data.count <= SafePersistence.maximumHistoryBytes {
-                best = data
-                lower = count + 1
-            } else {
-                upper = count - 1
+        let bounded = Array(entries.prefix(maximumEntryCount))
+
+        // The common case by a wide margin: the whole list fits, and the binary search below would
+        // spend ~log2(2_000) ≈ 11 full re-encodes of up to 8 MiB to rediscover that. This runs once
+        // per page load, so paying for the search unconditionally is eleven encodes and eleven
+        // allocations of the entire history on every navigation.
+        var best = try encoder.encode(bounded)
+        if best.count > SafePersistence.maximumHistoryBytes {
+            var lower = 0
+            var upper = bounded.count - 1
+            best = Data("[]".utf8)
+            while lower <= upper {
+                let count = (lower + upper) / 2
+                let data = try encoder.encode(Array(bounded.prefix(count)))
+                if data.count <= SafePersistence.maximumHistoryBytes {
+                    best = data
+                    lower = count + 1
+                } else {
+                    upper = count - 1
+                }
             }
         }
         try best.write(to: fileURL, options: [.atomic])

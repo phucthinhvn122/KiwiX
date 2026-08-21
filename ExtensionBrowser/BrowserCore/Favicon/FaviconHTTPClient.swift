@@ -56,7 +56,7 @@ private final class FaviconSessionDelegate: NSObject, URLSessionTaskDelegate, @u
         didCompleteWithError error: Error?
     ) {
         lock.withLock {
-            redirectCounts.removeValue(forKey: task.taskIdentifier)
+            _ = redirectCounts.removeValue(forKey: task.taskIdentifier)
         }
     }
 
@@ -64,7 +64,10 @@ private final class FaviconSessionDelegate: NSObject, URLSessionTaskDelegate, @u
         _ session: URLSession,
         task: URLSessionTask,
         didReceive challenge: URLAuthenticationChallenge,
-        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+        // `@Sendable` to match `URLSessionTaskDelegate`. Without it the signature merely *resembles*
+        // the requirement, and an Objective-C protocol that is satisfied by resemblance is one a
+        // typo can silently unhook.
+        completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
         if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust {
             completionHandler(.performDefaultHandling, nil)
@@ -134,13 +137,28 @@ final class FaviconHTTPClient: @unchecked Sendable {
         if response.expectedContentLength > 0 {
             data.reserveCapacity(min(Int(response.expectedContentLength), maximumByteCount))
         }
+        // Byte-by-byte iteration is the only way `AsyncBytes` enforces a cap on a chunked response
+        // whose length nobody declared, and that cap is the point of reading this way. Appending
+        // byte-by-byte is not: each `Data.append` is a uniqueness check and a possible reallocation,
+        // paid up to 1.5 million times for one icon. The bytes land in a flat buffer and cross into
+        // `Data` in 16 KiB runs instead. The limit is still checked per byte, so what is accepted
+        // does not change — only how many times the accounting is written down.
+        var chunk = [UInt8]()
+        chunk.reserveCapacity(16 * 1_024)
+        var total = 0
         for try await byte in bytes {
             try Task.checkCancellation()
-            guard data.count < maximumByteCount else {
+            guard total < maximumByteCount else {
                 throw FaviconNetworkError.responseTooLarge
             }
-            data.append(byte)
+            chunk.append(byte)
+            total += 1
+            if chunk.count == 16 * 1_024 {
+                data.append(contentsOf: chunk)
+                chunk.removeAll(keepingCapacity: true)
+            }
         }
+        data.append(contentsOf: chunk)
         _ = try FaviconImageValidator.validate(data: data, responseMIMEType: response.mimeType)
         return FaviconDownload(data: data, finalURL: safeFinalURL)
     }

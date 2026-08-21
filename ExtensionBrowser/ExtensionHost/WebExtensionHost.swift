@@ -137,11 +137,13 @@ final class WebExtensionHost: NSObject {
         timeout: TimeInterval? = nil
     ) async throws {
         let resumeOnce = ResumeOnce()
+        var deadline: Task<Void, Never>?
+        defer { deadline?.cancel() }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             if let timeout {
-                Task {
+                deadline = Task {
                     try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                    guard resumeOnce.claim() else { return }
+                    guard !Task.isCancelled, resumeOnce.claim() else { return }
                     continuation.resume(throwing: WebExtensionHostError.backgroundContentTimedOut(timeout))
                 }
             }

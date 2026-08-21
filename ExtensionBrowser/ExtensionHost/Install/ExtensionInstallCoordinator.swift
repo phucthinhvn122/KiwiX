@@ -102,9 +102,18 @@ final class ExtensionInstallCoordinator {
     /// does not inherit anything: the new permission is simply absent from the record, and
     /// `WebExtensionHost.apply(policy:)` denies whatever the record does not name.
     func install(_ prepared: PreparedExtensionInstall) async throws {
-        let root = try installRoot()
         let installer = self.installer
         let staged = prepared.staged
+        // `commit` owns the staging directory once it is reached — on success it consumes it, on
+        // failure it removes it. Nothing owned it before that, so a throw here (no Application
+        // Support, no space to create the install root) left the unpacked package behind.
+        let root: URL
+        do {
+            root = try installRoot()
+        } catch {
+            installer.discard(staged)
+            throw error
+        }
         let installedURL = try await Task.detached(priority: .userInitiated) {
             try installer.commit(staged, into: root)
         }.value
@@ -144,9 +153,16 @@ final class ExtensionInstallCoordinator {
         }
     }
 
+    /// Order matters: the catalog goes first.
+    ///
+    /// Unloading first meant a catalog write that failed — an unreadable file, no space — left the
+    /// extension stopped but still recorded as enabled, and `records` still describing it that way
+    /// on screen. The user sees a switch that is on for something that is not running, and the next
+    /// launch loads it again. Removing the record first makes the failure a no-op instead: nothing
+    /// was unloaded, nothing was deleted, and the error reaches the caller with the state intact.
     func remove(identifier: String) async throws {
-        unload(identifier: identifier)
         records = try await store.remove(identifier: identifier)
+        unload(identifier: identifier)
         onRecordsChanged?(records)
 
         guard let directory = resourceURL(for: identifier) else { return }

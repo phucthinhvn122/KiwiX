@@ -131,8 +131,10 @@ final class FaviconCacheTests: XCTestCase {
             .contentsOfDirectory(atPath: directory.path)
             .filter { $0.hasSuffix(".favicon") }
         XCTAssertEqual(onDisk.count, 1, "A miss must not remove or add anything")
+        // Hoisted: XCTAssertEqual takes autoclosures, which cannot carry an await.
         let reader = FaviconCache(directory: directory, configuration: configuration)
-        XCTAssertEqual(await reader.data(forKey: kept), Data([9, 9, 9]))
+        let restored = await reader.data(forKey: kept)
+        XCTAssertEqual(restored, Data([9, 9, 9]))
     }
 
     func testInvalidKeyCannotEscapeCacheDirectory() async {

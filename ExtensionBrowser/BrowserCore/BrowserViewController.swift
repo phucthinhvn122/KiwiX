@@ -458,9 +458,12 @@ final class BrowserViewController: UIViewController {
         // live text to accessibility; assigning a snapshot overrode that with whatever the
         // address was at the moment a tab loaded, so VoiceOver — and XCUITest's `value` —
         // read a blank field for the entire time the user was typing into it.
-        if let favicon = tab.favicon {
-            addressIconView.image = favicon
-        } else if tab.isPrivate {
+        // The icon beside the address is a security indicator and nothing else. A favicon is bytes
+        // the site chose, so letting one occupy this slot let a page on http:// draw its own
+        // padlock — and, because that branch came first, paint over the private-browsing indicator
+        // as well. Favicons still identify tabs in the switcher, where they claim nothing about
+        // transport security or about which profile a tab belongs to.
+        if tab.isPrivate {
             addressIconView.image = UIImage(systemName: "hand.raised.fill")
         } else if tab.url == nil || tab.url?.absoluteString == "about:blank" {
             addressIconView.image = UIImage(systemName: "magnifyingglass")
@@ -1069,7 +1072,7 @@ extension BrowserViewController: WKNavigationDelegate {
         didFailProvisionalNavigation navigation: WKNavigation!,
         withError error: Error
     ) {
-        handleNavigationFailure(error, webView: webView)
+        handleNavigationFailure(error, webView: webView, wasProvisional: true)
     }
 
     func webView(
@@ -1077,7 +1080,7 @@ extension BrowserViewController: WKNavigationDelegate {
         didFail navigation: WKNavigation!,
         withError error: Error
     ) {
-        handleNavigationFailure(error, webView: webView)
+        handleNavigationFailure(error, webView: webView, wasProvisional: false)
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
@@ -1235,12 +1238,27 @@ extension BrowserViewController: WKNavigationDelegate {
         downloadCoordinator.adopt(download, isPrivate: isPrivate)
     }
 
-    private func handleNavigationFailure(_ error: Error, webView: WKWebView) {
-        let nsError = error as NSError
-        guard nsError.code != NSURLErrorCancelled,
-              let tab = tabManager.tab(containing: webView) else {
-            return
+    /// - Parameter wasProvisional: true when nothing from this navigation ever committed, so the
+    ///   document still on screen belongs to the *previous* URL.
+    ///
+    /// The rollback runs before the cancellation check, and that ordering is the point. `WKWebView.url`
+    /// is the active URL, which during a provisional load is the target rather than what is rendered,
+    /// and `didStartProvisionalNavigation` writes it straight into the tab. If that load is then
+    /// cancelled — `window.stop()` from a script fifty milliseconds after setting `location.href`, or
+    /// the user pressing Stop — WebKit reports NSURLErrorCancelled, nothing commits, and the previous
+    /// page stays live under an address bar naming somewhere it never went. With the HTTPS padlock,
+    /// because the target's scheme is what the icon was chosen from. Treating cancellation as
+    /// "nothing to report" is right for the error view and wrong for the address.
+    private func handleNavigationFailure(_ error: Error, webView: WKWebView, wasProvisional: Bool) {
+        guard let tab = tabManager.tab(containing: webView) else { return }
+        if wasProvisional {
+            tabManager.revertToCommittedURL(
+                tabID: tab.id,
+                committedURL: webView.backForwardList.currentItem?.url
+            )
         }
+        let nsError = error as NSError
+        guard nsError.code != NSURLErrorCancelled else { return }
         BrowserDiagnostics.shared.recordNavigationEvent()
         showNavigationError(error, for: tab)
     }

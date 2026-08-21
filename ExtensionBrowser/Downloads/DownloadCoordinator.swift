@@ -369,9 +369,19 @@ final class DownloadCoordinator: NSObject, WKDownloadDelegate {
         var unsafeDownloads: [(UUID, WKDownload)] = []
         for (id, download) in downloadsByID {
             changed = updateProgress(for: id, from: download, forcePersistence: false) || changed
-            if let item = itemsByID[id], resourcePolicy.shouldAbort(
+            // Only a transfer that has been given a destination has a volume to measure. A `.queued`
+            // download has no `localFileURL` until `decideDestinationUsing` runs, so the capacity
+            // came back nil — and `shouldAbort` reads a missing measurement as "abort", which is the
+            // right default for a check that must fail closed and the wrong answer to a question
+            // that was never asked. The timer only runs while something is downloading, so adopting
+            // a second file while the first was in flight cancelled it inside 250 ms, reporting a
+            // storage limit that had not been reached.
+            guard let item = itemsByID[id],
+                  item.status == .downloading,
+                  let directory = item.localFileURL?.deletingLastPathComponent() else { continue }
+            if resourcePolicy.shouldAbort(
                 receivedBytes: item.bytesReceived,
-                availableBytes: item.localFileURL.flatMap { availableCapacity(at: $0.deletingLastPathComponent()) }
+                availableBytes: availableCapacity(at: directory)
             ) {
                 unsafeDownloads.append((id, download))
             }

@@ -306,6 +306,22 @@ final class TabManager {
         schedulePersistence()
     }
 
+    /// Puts a tab's address back to a load that actually committed.
+    ///
+    /// Distinct from `updateTab(id:url:)`, where `nil` means "leave the URL alone": here `nil` is a
+    /// real value. A tab whose provisional load was cancelled before anything committed has no
+    /// address at all, and going on showing the target of a load that never happened is the bug
+    /// this exists to undo.
+    func revertToCommittedURL(tabID: UUID, committedURL: URL?) {
+        guard let tab = tab(id: tabID), tab.url != committedURL else { return }
+        tab.url = committedURL
+        tab.favicon = nil
+        tab.updateFaviconCandidate()
+        delegate?.tabManager(self, didUpdate: tab)
+        webExtensionObserver?.tabManager(self, didChange: [.url], for: tab)
+        schedulePersistence()
+    }
+
     func updateFavicon(
         tabID: UUID,
         image: UIImage,

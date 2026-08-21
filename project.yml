@@ -85,6 +85,17 @@ targets:
                 UISceneDelegateClassName: "$(PRODUCT_MODULE_NAME).SceneDelegate"
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+          # App Transport Security governs WKWebView, not just URLSession, and the only exemption
+          # here was for local names. A browser that cannot open http://example.com is not a
+          # browser: the load fails with NSURLErrorAppTransportSecurityRequiresSecureConnection and
+          # the user gets the error view. URLInputParser even produces http URLs deliberately
+          # (localhost, bare IPv4, host:port), which ATS was then rejecting.
+          #
+          # InWebContent, not NSAllowsArbitraryLoads. This exempts page loads only; every native
+          # request the app makes itself stays under ATS, which matters because the one native
+          # network client is the favicon fetcher, reading URLs chosen by web content. It also
+          # keeps NetworkDestinationPolicy's refusal to downgrade https -> http meaningful.
+          NSAllowsArbitraryLoadsInWebContent: true
         # Exported, not Imported: com.extensionbrowser.* is a prefix this app owns, and an
         # imported declaration claims the opposite.
         UTExportedTypeDeclarations:

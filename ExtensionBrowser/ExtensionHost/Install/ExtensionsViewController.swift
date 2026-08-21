@@ -16,6 +16,14 @@ final class ExtensionsViewController: UITableViewController, UIDocumentPickerDel
     /// A file handed over by another app. Held until the view is on screen, because the permission
     /// sheet has to be presented from a view controller the window is actually showing.
     private var pendingImportURL: URL?
+    /// Staging directory of the package currently waiting on the consent sheet, if any.
+    ///
+    /// A `PreparedExtensionInstall` owns an unpacked directory until somebody answers for it, and
+    /// the answer normally comes from one of the sheet's two buttons. It does not always come:
+    /// `BrowserViewController.presentExtensions(importing:)` dismisses whatever is on screen when
+    /// another app hands KiwiX a package, and that can be this controller with the sheet still up.
+    /// The decision handler is released without running and nobody is left to call `cancel`.
+    private var unansweredStagingRoot: URL?
 
     init(coordinator: ExtensionInstallCoordinator) {
         self.coordinator = coordinator
@@ -26,6 +34,17 @@ final class ExtensionsViewController: UITableViewController, UIDocumentPickerDel
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    /// Last owner of an unanswered staging directory.
+    ///
+    /// Being dismissed out from under the consent sheet is the case this covers; by then nothing
+    /// else retains this controller, so deallocation is the last moment the directory has an owner.
+    /// `FileManager` directly rather than `coordinator.cancel`: a `deinit` cannot hop to the main
+    /// actor, and the whole operation is one `removeItem` on a path this object produced.
+    deinit {
+        guard let unansweredStagingRoot else { return }
+        try? FileManager.default.removeItem(at: unansweredStagingRoot)
     }
 
     override func viewDidLoad() {
@@ -113,12 +132,17 @@ final class ExtensionsViewController: UITableViewController, UIDocumentPickerDel
     }
 
     private func presentPermissionSheet(for prepared: PreparedExtensionInstall) {
+        // Handed to `deinit` in case the sheet never gets an answer; see `unansweredStagingRoot`.
+        unansweredStagingRoot = prepared.staged.stagingRoot
+
         let sheet = ExtensionPermissionSheetViewController(
             summary: prepared.summary,
             requiresExplicitTrust: prepared.requiresExplicitTrust,
             publisherIdentifier: prepared.publisherIdentifier
         ) { [weak self] shouldInstall in
             guard let self else { return }
+            // Answered: whichever way this goes, `install` or `cancel` owns the directory now.
+            self.unansweredStagingRoot = nil
             // Installing after the dismissal completes, not alongside it: `showError` refuses to
             // stack on top of another presentation, so an error raised mid-animation would vanish.
             self.dismiss(animated: true) { [weak self] in

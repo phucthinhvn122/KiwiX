@@ -64,10 +64,14 @@ private final class FaviconSessionDelegate: NSObject, URLSessionTaskDelegate, @u
         _ session: URLSession,
         task: URLSessionTask,
         didReceive challenge: URLAuthenticationChallenge,
-        // `@Sendable` to match `URLSessionTaskDelegate`. Without it the signature merely *resembles*
-        // the requirement, and an Objective-C protocol that is satisfied by resemblance is one a
-        // typo can silently unhook.
-        completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+        // Swift warns that the sendability of this parameter does not match `URLSessionTaskDelegate`
+        // ("an error in the Swift 6 language mode"). Adding `@Sendable` was tried and measured on CI
+        // run 32449478822: the warning is identical with and without it, so the mismatch is not the
+        // one that annotation fixes. Left as the SDK's own spelling rather than annotated on a guess
+        // — this method is the TLS challenge gate, and a signature that stops matching the protocol
+        // is a delegate callback that silently stops being called. Needs someone with the SDK to
+        // read the real declaration of the requirement.
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
         if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust {
             completionHandler(.performDefaultHandling, nil)

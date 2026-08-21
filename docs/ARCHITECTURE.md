@@ -98,6 +98,14 @@ mirrors browser events into the runtime through `TabWebExtensionObserving`: open
 and property changes. Ordering is fixed — the window is announced before its tabs, and a tab is opened
 before it can be activated. Private tabs are filtered out of every one of those calls.
 
+Four of those five fire. `move` does not, and the reason is the browser rather than the host:
+`TabManager.reorderTab` is the only caller of `didMoveTab`, and nothing calls `TabManager.reorderTab` —
+the tab switcher lists tabs but has no drag-to-reorder. So `tabs.onMoved` never fires and
+`tabs.move` has no browser-side effect to observe, even though the host side of the contract is
+implemented and ordered correctly. The code is kept rather than deleted because it is the ADR-004
+contract a reorder gesture would need; what is missing is the gesture. Not covered by the harness:
+the fixture cannot reorder tabs either.
+
 `WebExtensionHost.loadExtension` assigns `uniqueIdentifier` before load. The default is a fresh UUID per
 install and it is what the extension reads as `browser.runtime.id`, so anything keyed on the default is
 lost on reinstall. Apple documents the property as settable only while the context is unloaded. The

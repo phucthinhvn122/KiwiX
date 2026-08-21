@@ -37,6 +37,14 @@ final class BrowserViewController: UIViewController {
     private let externalNavigationRateLimiter = ExternalNavigationRateLimiter()
     private let webDialogRateLimiter = WebDialogRateLimiter()
     private let popupCreationRateLimiter = PopupCreationRateLimiter()
+    /// Which tab the address bar is being edited for.
+    ///
+    /// The selected tab can change while the keyboard is up — an extension calling `tabs.update`,
+    /// a background page opening one — and Return would then send what the user typed to whichever
+    /// tab happened to be in front by the time they finished.
+    private var editingTabID: UUID?
+    /// Keeps the app alive long enough to finish writing the session on the way to the background.
+    private var backgroundFlushAssertion: UIBackgroundTaskIdentifier = .invalid
 
     /// Named so a test can find the recogniser without the view hierarchy being made public.
     static let dismissKeyboardTapName = "browser.dismissKeyboardTap"
@@ -102,10 +110,35 @@ final class BrowserViewController: UIViewController {
         tabManager.handleMemoryWarning()
     }
 
+    /// Captures a snapshot of the foreground tab and flushes the session, under an expiration
+    /// assertion.
+    ///
+    /// The work is asynchronous — `takeSnapshot` round-trips to the web content process, then the
+    /// session is encoded and written through an actor — and `sceneDidEnterBackground` returns long
+    /// before any of it finishes. Without an assertion the app can be suspended in the middle, and
+    /// what is lost is the tab session: the thing whose whole job is to survive being backgrounded.
     func prepareForBackground() {
+        // Held as a property rather than a local: both the expiration handler and the Task have to
+        // be able to clear it, and a `var` captured by a `@Sendable` closure cannot be mutated.
+        endBackgroundFlushAssertion()
+        backgroundFlushAssertion = UIApplication.shared.beginBackgroundTask(
+            name: "kiwix.session-flush"
+        ) { [weak self] in
+            // Out of time. Ending it here is mandatory — iOS kills an app that holds an assertion
+            // past its expiration. Documented as called on the main thread.
+            MainActor.assumeIsolated { self?.endBackgroundFlushAssertion() }
+        }
+
         Task { [weak self] in
             await self?.tabManager.prepareForBackground()
+            self?.endBackgroundFlushAssertion()
         }
+    }
+
+    private func endBackgroundFlushAssertion() {
+        guard backgroundFlushAssertion != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundFlushAssertion)
+        backgroundFlushAssertion = .invalid
     }
 
     private func configureInterface() {
@@ -929,6 +962,7 @@ extension BrowserViewController: UIGestureRecognizerDelegate {
 
 extension BrowserViewController: UITextFieldDelegate {
     func textFieldDidBeginEditing(_ textField: UITextField) {
+        editingTabID = tabManager.selectedTabID
         textField.rightViewMode = .never
         if let url = tabManager.selectedTab?.url,
            url.absoluteString != "about:blank" {
@@ -946,6 +980,7 @@ extension BrowserViewController: UITextFieldDelegate {
     }
 
     func textFieldDidEndEditing(_ textField: UITextField) {
+        editingTabID = nil
         UIView.animate(withDuration: 0.2) {
             self.controlsStack.isHidden = false
             textField.layer.borderColor = UIColor.clear.cgColor
@@ -967,7 +1002,10 @@ extension BrowserViewController: UITextFieldDelegate {
             return false
         }
         errorView.hide()
-        tabManager.navigate(to: resolution.url)
+        // Addressed to the tab that was in front when typing started. A stale id makes
+        // `navigate(to:in:)` a no-op, which is the right outcome for a tab that has since been
+        // closed — better than quietly loading it somewhere the user was not looking.
+        tabManager.navigate(to: resolution.url, in: editingTabID ?? tabManager.selectedTabID)
         textField.resignFirstResponder()
         return true
     }

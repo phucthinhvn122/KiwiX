@@ -132,7 +132,14 @@ final class TabSnapshotManager {
         guard let image else { return tab.snapshot }
         tab.snapshot = image
 
-        guard !tab.isPrivate, let data = image.jpegData(compressionQuality: 0.72) else {
+        guard !tab.isPrivate else { return image }
+        // JPEG-encoding a full-width page render is tens of milliseconds of CPU, and this runs on
+        // the main actor once per tab every time the lifecycle planner suspends one — which is on
+        // every tab switch and on every memory warning, for several tabs in a row. `UIImage` is
+        // immutable and Sendable, so the encode has no reason to be here.
+        guard let data = await Task.detached(priority: .utility, operation: {
+            image.jpegData(compressionQuality: 0.72)
+        }).value else {
             return image
         }
 

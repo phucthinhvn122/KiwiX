@@ -59,9 +59,42 @@ final class ExtensionInstallCoordinator {
 
     /// Loads every enabled extension. Call once, at launch.
     func restore() async {
-        await reload()
+        let catalog = try? await store.load()
+        records = catalog ?? []
+        onRecordsChanged?(records)
+        if catalog != nil {
+            // Only when the catalog was actually readable. It is the authority on what is installed,
+            // so a directory it does not name is an orphan — but a catalog that failed to load names
+            // nothing at all, and wiping every extension because one read failed is not a recovery.
+            discardOrphanedResourceDirectories()
+        }
         for record in records where record.isEnabled {
             await load(record)
+        }
+    }
+
+    /// Deletes unpacked extensions the catalog has no record of.
+    ///
+    /// `commit` counts the children of `Extensions/` against the 32-extension cap, so a directory
+    /// left behind by a delete that failed halfway does not just waste disk — it consumes a slot the
+    /// user cannot see and cannot free from the Extensions screen, because nothing lists it.
+    private func discardOrphanedResourceDirectories() {
+        guard let root = try? installRoot() else { return }
+        let known = Set(records.map(\.identifier))
+        guard let listing = try? BoundedDirectoryReader.directChildren(
+            of: root,
+            maximumEntryCount: SafePersistence.maximumInstalledExtensionCount * 4,
+            fileManager: fileManager
+        ) else { return }
+
+        for url in listing.entries {
+            let name = url.lastPathComponent
+            // Shape-checked before it is handed to a recursive delete, for the same reason
+            // `resourceURL(for:)` does it: a name read off the filesystem is not an identifier
+            // until something says so.
+            guard ExtensionIdentifier(rawValue: name) != nil, !known.contains(name) else { continue }
+            try? fileManager.removeItem(at: url)
+            AppLog.extensions.info("Removed an unpacked extension the catalog does not know about")
         }
     }
 

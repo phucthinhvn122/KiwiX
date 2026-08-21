@@ -104,6 +104,37 @@ final class FaviconCacheTests: XCTestCase {
         XCTAssertFalse(files.isEmpty, "Trimming to nothing would be a different bug")
     }
 
+    /// A miss is what precedes every insert, so if a miss discards the running disk total the total
+    /// is nil every time it is consulted and the scan it exists to avoid runs anyway. Asserted
+    /// through behaviour rather than private state: after a miss-then-insert cycle the cache must
+    /// still be enforcing its limits, and must still hold what it was given.
+    func testACacheMissDoesNotDisturbTheStoredEntries() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FaviconCacheTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configuration = FaviconCacheConfiguration(
+            memoryByteLimit: 0,
+            diskByteLimit: 1_024 * 1_024,
+            maximumDiskEntryCount: 8,
+            maximumEntryByteCount: 128
+        )
+        let cache = FaviconCache(directory: directory, configuration: configuration)
+        let kept = try XCTUnwrap(FaviconCacheKey.value(for: URL(string: "https://kept.example/i.png")!))
+        await cache.insert(Data([9, 9, 9]), forKey: kept)
+
+        // Miss on a key that was never written: nothing on disk may change.
+        let absent = try XCTUnwrap(FaviconCacheKey.value(for: URL(string: "https://absent.example/i.png")!))
+        let missed = await cache.data(forKey: absent)
+        XCTAssertNil(missed)
+
+        let onDisk = try FileManager.default
+            .contentsOfDirectory(atPath: directory.path)
+            .filter { $0.hasSuffix(".favicon") }
+        XCTAssertEqual(onDisk.count, 1, "A miss must not remove or add anything")
+        let reader = FaviconCache(directory: directory, configuration: configuration)
+        XCTAssertEqual(await reader.data(forKey: kept), Data([9, 9, 9]))
+    }
+
     func testInvalidKeyCannotEscapeCacheDirectory() async {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("FaviconCacheTests-\(UUID().uuidString)", isDirectory: true)

@@ -58,6 +58,12 @@ actor FaviconCache {
             maximumByteCount: configuration.maximumEntryByteCount,
             fileManager: fileManager
         ), !data.isEmpty else {
+            // Only a file that was there and turned out to be unreadable changes what is on disk.
+            // Forgetting the running total on a plain miss undid the whole point of keeping one:
+            // a miss is what precedes every `insert`, so the total was nil every single time
+            // `trimDiskIfNeeded` consulted it, and the full directory scan ran anyway — once per
+            // newly visited site, exactly as before it was written.
+            guard fileManager.fileExists(atPath: url.path) else { return nil }
             try? fileManager.removeItem(at: url)
             forgetMeasuredDiskUsage()
             return nil

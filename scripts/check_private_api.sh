@@ -25,6 +25,7 @@ case "${mode}" in
       --exclude-dir='.git' \
       --exclude-dir='build' \
       --exclude-dir='DerivedData' \
+      --exclude-dir='artifacts' \
       --exclude='check_private_api.sh' \
       "${source_pattern}" "${target}" || true)"
     ;;

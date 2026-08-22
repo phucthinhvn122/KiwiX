@@ -34,6 +34,12 @@ final class ExtensionInstallCoordinator {
     private weak var host: WebExtensionHost?
 
     private(set) var records: [InstalledExtensionRecord] = []
+    /// Identifiers with an enable/disable in flight.
+    ///
+    /// `setEnabled` awaits the catalog and then awaits the runtime, and the switch stays live the
+    /// whole time. Two quick taps interleaved a load against an unload for the same context and
+    /// left the runtime disagreeing with the record on disk about whether the extension was on.
+    private var enablementInFlight: Set<String> = []
     var onRecordsChanged: (([InstalledExtensionRecord]) -> Void)?
 
     init(
@@ -175,6 +181,9 @@ final class ExtensionInstallCoordinator {
     // MARK: - Managing
 
     func setEnabled(_ isEnabled: Bool, for identifier: String) async throws {
+        guard enablementInFlight.insert(identifier).inserted else { return }
+        defer { enablementInFlight.remove(identifier) }
+
         records = try await store.setEnabled(isEnabled, for: identifier)
         onRecordsChanged?(records)
 

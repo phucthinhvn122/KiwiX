@@ -132,7 +132,8 @@ Appetize là tùy chọn:
 
 ### Device: unsigned luôn có, signed khi đủ secrets
 
-[`.github/workflows/build-device.yml`](.github/workflows/build-device.yml) chạy trên push hoặc manual dispatch:
+[`.github/workflows/build-device.yml`](.github/workflows/build-device.yml) chỉ chạy bằng manual dispatch — nó khai
+`on: workflow_dispatch` và không có trigger push, nên đường ký chưa bao giờ chạy tự động:
 
 - Luôn archive `iphoneos` với code signing tắt và upload artifact **ExtensionBrowser-Unsigned-Device** gồm:
   - `ExtensionBrowser-Unsigned.ipa`: ZIP theo layout `Payload/ExtensionBrowser.app`, nhưng không có Apple signature/provisioning profile dùng được.

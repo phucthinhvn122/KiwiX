@@ -446,6 +446,7 @@ final class BrowserViewController: UIViewController {
         // Restored after the hide above, so a tab that failed to load still says so when the user
         // comes back to it rather than presenting a blank content area.
         presentNavigationFailure(for: tab.id)
+        restoreCachedFavicon(for: tab)
 
         guard let webView = tab.webView else {
             updateControls()
@@ -622,6 +623,11 @@ final class BrowserViewController: UIViewController {
             return outgoing
         }
         tabsButton.configuration = tabConfiguration
+        // The count lives in the button's title, which an explicit accessibilityLabel overrides —
+        // so VoiceOver said "Show tabs" and never how many there were.
+        tabsButton.accessibilityLabel = tabManager.tabs.count == 1
+            ? "Show tabs, 1 tab open"
+            : "Show tabs, \(tabManager.tabs.count) tabs open"
         menuButton.menu = makeBrowserMenu()
     }
 
@@ -949,6 +955,38 @@ final class BrowserViewController: UIViewController {
             externalNavigationRateLimiter.remove(tabID: tabID)
             webDialogRateLimiter.remove(tabID: tabID)
             popupCreationRateLimiter.remove(tabID: tabID)
+        }
+    }
+
+    /// Puts a restored tab's icon back from the cache, if one was kept.
+    ///
+    /// Costs no network. The address the icon was fetched from came back with the session; this is
+    /// the only thing that reads it.
+    private func restoreCachedFavicon(for tab: Tab) {
+        guard !tab.isPrivate,
+              tab.favicon == nil,
+              let faviconURL = tab.faviconURL,
+              let pageURL = tab.url else {
+            return
+        }
+        let tabID = tab.id
+        let generation = faviconGenerations[tabID, default: 0]
+        Task { [weak self] in
+            guard let self,
+                  let image = await self.faviconService.cachedImage(for: faviconURL) else { return }
+            // A live fetch started in the meantime wins, and so does any navigation.
+            guard self.faviconGenerations[tabID] == generation,
+                  let current = self.tabManager.tab(id: tabID),
+                  current.favicon == nil,
+                  current.url == pageURL else {
+                return
+            }
+            self.tabManager.updateFavicon(
+                tabID: tabID,
+                image: image,
+                sourceURL: faviconURL,
+                expectedPageURL: pageURL
+            )
         }
     }
 

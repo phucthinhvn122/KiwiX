@@ -2,7 +2,10 @@ PROJECT ?= ExtensionBrowser.xcodeproj
 SCHEME ?= ExtensionBrowser
 CONFIGURATION ?= Debug
 DERIVED_DATA ?= build/DerivedData
-DESTINATION ?= generic/platform=iOS Simulator
+# A concrete simulator, not `generic/platform=iOS Simulator`: a generic destination can be built
+# for but not run on, so `make test` and `make bench` failed with the Makefile's own default and
+# only worked when CI passed a booted UDID in. Overridable, and CI still overrides it.
+DESTINATION ?= platform=iOS Simulator,name=iPhone 16,OS=latest
 BUNDLE_IDENTIFIER ?= com.phucthinhvn122.KiwiX
 RESULT_BUNDLE_PATH ?= build/Benchmarks.xcresult
 TEST_RESULT_BUNDLE_PATH ?= build/Tests.xcresult

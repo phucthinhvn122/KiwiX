@@ -91,6 +91,21 @@ final class FaviconService {
         return nil
     }
 
+    /// The icon already on disk for a known favicon address. Never touches the network.
+    ///
+    /// `TabRecord.faviconURL` is computed on every navigation, validated on save, validated again on
+    /// load and re-hydrated onto every restored `Tab` — and nothing has ever read it back, so a
+    /// relaunch showed a generic globe for every tab until its page was visited again. Cache-only on
+    /// purpose: restoring fifty tabs must not open fifty connections at launch.
+    func cachedImage(for faviconURL: URL) async -> UIImage? {
+        guard let key = FaviconCacheKey.value(for: faviconURL),
+              let data = await cache.data(forKey: key),
+              let decoded = await decoder.decode(data) else {
+            return nil
+        }
+        return UIImage(cgImage: decoded.cgImage)
+    }
+
     func cancelAll() async {
         await broker.cancelAll()
     }

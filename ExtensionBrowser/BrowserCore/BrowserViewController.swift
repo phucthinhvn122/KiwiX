@@ -57,6 +57,12 @@ final class BrowserViewController: UIViewController {
     private var editingTabID: UUID?
     /// Keeps the app alive long enough to finish writing the session on the way to the background.
     private var backgroundFlushAssertion: UIBackgroundTaskIdentifier = .invalid
+    private var statusBarStyle: UIStatusBarStyle = .default {
+        didSet {
+            guard oldValue != statusBarStyle else { return }
+            setNeedsStatusBarAppearanceUpdate()
+        }
+    }
 
     /// Which tabs are showing a failed load, and what to retry.
     ///
@@ -106,6 +112,12 @@ final class BrowserViewController: UIViewController {
         // The strip the hardware takes — beside the content in landscape, under the status bar in
         // portrait — is painted like the page canvas instead of being left as a contrasting slab.
         view.backgroundColor = KiwiTheme.canvas
+        // `traitCollectionDidChange` is deprecated from iOS 17. Both halves of the chrome colour are
+        // style-dependent — `KiwiTheme.canvas` resolves per style, and so does the luminance the
+        // status bar style is picked from — so the flip has to be observed rather than assumed.
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (controller: BrowserViewController, _) in
+            controller.refreshChromeBackground()
+        }
         configureInterface()
 
         tabManager.delegate = self
@@ -134,6 +146,8 @@ final class BrowserViewController: UIViewController {
             await self?.tabManager.restoreSession()
         }
     }
+
+    override var preferredStatusBarStyle: UIStatusBarStyle { statusBarStyle }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
@@ -517,6 +531,12 @@ final class BrowserViewController: UIViewController {
                     self.updateProgress(for: observed)
                     self.updateControls()
                 }
+            },
+            webView.observe(\.underPageBackgroundColor, options: [.initial, .new]) { [weak self] observed, _ in
+                MainActor.assumeIsolated {
+                    guard let self, observed === self.displayedWebView else { return }
+                    self.refreshChromeBackground()
+                }
             }
         ]
     }
@@ -584,6 +604,41 @@ final class BrowserViewController: UIViewController {
                 searchEngineName: settingsStore.selectedSearchEngine.name
             )
         }
+        refreshChromeBackground()
+    }
+
+    /// Paints the strip the hardware takes with the colour of the page behind it.
+    ///
+    /// The safe area under the notch is the app's, not the page's, so something has to fill it. It
+    /// was filled with `KiwiTheme.canvas` — which follows the *interface* style, not the document.
+    /// In dark mode on a light page that is a black slab sitting above white content, and it reads
+    /// as the page being cut off rather than as chrome. `underPageBackgroundColor` is what WebKit
+    /// derives from the document for exactly this purpose; it is what Safari puts up there too.
+    private func refreshChromeBackground() {
+        let background = currentChromeBackground()
+        view.backgroundColor = background
+        webContentContainer.backgroundColor = background
+
+        // The status bar sits on this strip. Left to itself it follows the interface style, so a
+        // page that turns the strip white in dark mode would draw the clock white on white.
+        let resolved = background.resolvedColor(with: traitCollection)
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        guard resolved.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else {
+            statusBarStyle = .default
+            return
+        }
+        let luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+        statusBarStyle = luminance > 0.6 ? .darkContent : .lightContent
+    }
+
+    private func currentChromeBackground() -> UIColor {
+        // The start page is the app's own surface; it should look like the app, not like about:blank.
+        guard startPageView.isHidden else { return KiwiTheme.canvas }
+        guard let pageColor = displayedWebView?.underPageBackgroundColor,
+              pageColor.resolvedColor(with: traitCollection).cgColor.alpha > 0.01 else {
+            return KiwiTheme.canvas
+        }
+        return pageColor
     }
 
     private func updateProgress(for webView: WKWebView) {

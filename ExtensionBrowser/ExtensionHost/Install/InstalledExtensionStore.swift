@@ -74,6 +74,17 @@ public struct InstalledExtensionRecord: Codable, Equatable, Sendable {
 }
 
 extension InstalledExtensionRecord {
+    /// Granted permissions this build accepts and the platform then ignores.
+    ///
+    /// Derived from the record rather than stored on it: which capabilities are inert is a fact
+    /// about the runtime this copy of KiwiX is running on, not about the package, and baking it
+    /// into the catalog would freeze today's answer into a file that outlives it. See R-21.
+    var inertPermissions: [String] {
+        grantedPermissions
+            .filter(UnenforcedExtensionCapability.permissions.contains)
+            .sorted()
+    }
+
     /// What this record means to the host. Never `trustFirstPartyBundle`: that policy exists for
     /// bundles the app ships, and nothing installed from a file can reach it.
     var permissionPolicy: WebExtensionPermissionPolicy {

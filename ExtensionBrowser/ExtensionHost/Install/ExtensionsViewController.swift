@@ -306,6 +306,11 @@ final class ExtensionsViewController: UITableViewController, UIDocumentPickerDel
         if !record.isEnabled {
             parts.append("Off")
         }
+        // The row has to keep saying it. The consent sheet warned once, at install; a month later
+        // this list is the only thing the user can look at to work out why nothing is being blocked.
+        if !record.inertPermissions.isEmpty {
+            parts.append("Request blocking inactive")
+        }
         return parts.joined(separator: " · ")
     }
 

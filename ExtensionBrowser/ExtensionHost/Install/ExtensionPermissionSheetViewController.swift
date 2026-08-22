@@ -106,6 +106,20 @@ final class ExtensionPermissionSheetViewController: UITableViewController {
                 )
             )
         }
+        // Said before the install, not discovered after it. An extension whose whole purpose is
+        // blocking requests installs cleanly here and then does nothing, because the platform takes
+        // the rules and ignores them — measured on every CI run, see R-21. Without this the user
+        // has a switch that is on, an extension that looks installed, and no explanation.
+        if !summary.inertPermissions.isEmpty {
+            warnings.append(
+                .warning(
+                    text: "This extension asks to block or inspect network requests (\(summary.inertPermissions.joined(separator: ", "))). "
+                        + "KiwiX accepts the request and the system does not act on it, so that part will not work. "
+                        + "If blocking is the whole point of this extension, it will do nothing.",
+                    isBold: true
+                )
+            )
+        }
         if !warnings.isEmpty {
             sections.append(Section(title: "Before you add this", footer: nil, rows: warnings))
         }

@@ -1,6 +1,18 @@
 import UIKit
 import WebKit
 
+/// Why the browser gave up on a page rather than why the network did.
+enum BrowserContentProcessError: LocalizedError {
+    case terminatedRepeatedly
+
+    var errorDescription: String? {
+        switch self {
+        case .terminatedRepeatedly:
+            return "This page keeps crashing and has been stopped. Try again, or open a different page."
+        }
+    }
+}
+
 @MainActor
 final class BrowserViewController: UIViewController {
     private let tabManager: TabManager
@@ -45,6 +57,24 @@ final class BrowserViewController: UIViewController {
     private var editingTabID: UUID?
     /// Keeps the app alive long enough to finish writing the session on the way to the background.
     private var backgroundFlushAssertion: UIBackgroundTaskIdentifier = .invalid
+
+    /// Which tabs are showing a failed load, and what to retry.
+    ///
+    /// There is one `BrowserErrorView` for the whole browser, and `display(tab:)` hides it on every
+    /// switch. Without somewhere to keep the state, leaving a tab that failed to load and coming
+    /// back to it showed an empty content area with no error and no way to retry — the failure was
+    /// a property of the view, and the view had moved on.
+    private struct NavigationFailure {
+        let message: String
+        /// The address the failed load was aimed at, which is not necessarily the tab's address any
+        /// more: a provisional failure rolls the tab back to whatever last committed.
+        let attemptedURL: URL?
+    }
+    private var navigationFailures: [UUID: NavigationFailure] = [:]
+    /// Consecutive content-process terminations per tab, so a page that reliably kills its process
+    /// is not reloaded forever.
+    private var contentProcessRestarts: [UUID: Int] = [:]
+    private static let maximumContentProcessRestarts = 3
 
     /// Named so a test can find the recogniser without the view hierarchy being made public.
     static let dismissKeyboardTapName = "browser.dismissKeyboardTap"
@@ -406,6 +436,9 @@ final class BrowserViewController: UIViewController {
         errorView.hide()
 
         updateStartPage(for: tab)
+        // Restored after the hide above, so a tab that failed to load still says so when the user
+        // comes back to it rather than presenting a blank content area.
+        presentNavigationFailure(for: tab.id)
 
         guard let webView = tab.webView else {
             updateControls()
@@ -854,15 +887,36 @@ final class BrowserViewController: UIViewController {
         updatePrivateAppearance(for: tabManager.selectedTab)
     }
 
-    private func showNavigationError(_ error: Error, for tab: Tab) {
-        guard tab.id == tabManager.selectedTabID else { return }
-        hideRestorationOverlay(animated: false)
-        errorView.show(message: SafeInput.userFacingError(
+    /// Records a failure against the tab it belongs to, and shows it if that tab is on screen.
+    ///
+    /// Recording happens either way. The previous version returned early for a background tab, so
+    /// the failure existed only as long as the tab stayed selected.
+    private func recordNavigationFailure(_ error: Error, for tab: Tab, attemptedURL: URL?) {
+        let message = SafeInput.userFacingError(
             error,
             fallback: "Check your connection and try loading the page again."
-        )) { [weak self] in
-            self?.errorView.hide()
-            self?.displayedWebView?.reload()
+        )
+        navigationFailures[tab.id] = NavigationFailure(message: message, attemptedURL: attemptedURL)
+        guard tab.id == tabManager.selectedTabID else { return }
+        presentNavigationFailure(for: tab.id)
+    }
+
+    private func presentNavigationFailure(for tabID: UUID) {
+        guard let failure = navigationFailures[tabID] else { return }
+        hideRestorationOverlay(animated: false)
+        errorView.show(message: failure.message) { [weak self] in
+            guard let self else { return }
+            self.errorView.hide()
+            self.navigationFailures.removeValue(forKey: tabID)
+            // `reload()` alone is not a retry here. A provisional load that failed committed
+            // nothing, so there is no current item for the web view to reload — Try Again did
+            // nothing at all on exactly the failures the button exists for. Re-issuing the address
+            // that was attempted is what the user asked for.
+            if let attemptedURL = failure.attemptedURL {
+                self.tabManager.navigate(to: attemptedURL, in: tabID)
+            } else {
+                self.displayedWebView?.reload()
+            }
         }
     }
 
@@ -883,6 +937,8 @@ final class BrowserViewController: UIViewController {
         for tabID in Array(faviconGenerations.keys) where !liveTabIDs.contains(tabID) {
             faviconGenerations.removeValue(forKey: tabID)
             faviconTasks.removeValue(forKey: tabID)?.cancel()
+            navigationFailures.removeValue(forKey: tabID)
+            contentProcessRestarts.removeValue(forKey: tabID)
             externalNavigationRateLimiter.remove(tabID: tabID)
             webDialogRateLimiter.remove(tabID: tabID)
             popupCreationRateLimiter.remove(tabID: tabID)
@@ -1070,6 +1126,8 @@ extension BrowserViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard let tab = tabManager.tab(containing: webView) else { return }
         cancelFaviconLoad(tabID: tab.id)
+        // A new attempt supersedes the last failure, whether or not this tab is the one on screen.
+        navigationFailures.removeValue(forKey: tab.id)
         BrowserDiagnostics.shared.recordNavigationEvent()
         tabManager.updateTab(id: tab.id, url: webView.url)
         if tab.id == tabManager.selectedTabID {
@@ -1088,6 +1146,8 @@ extension BrowserViewController: WKNavigationDelegate {
         guard let tab = tabManager.tab(containing: webView) else { return }
         BrowserDiagnostics.shared.recordNavigationEvent()
         tabManager.updateTab(id: tab.id, title: webView.title, url: webView.url)
+        navigationFailures.removeValue(forKey: tab.id)
+        contentProcessRestarts.removeValue(forKey: tab.id)
         tabManager.markRestorationComplete(tabID: tab.id)
         if tab.id == tabManager.selectedTabID {
             hideRestorationOverlay(animated: true)
@@ -1129,10 +1189,36 @@ extension BrowserViewController: WKNavigationDelegate {
         handleNavigationFailure(error, webView: webView, wasProvisional: false)
     }
 
+    /// A tab whose web content process died is blank until something reloads it.
+    ///
+    /// Two things were wrong with only reloading the foreground one. A background tab that lost its
+    /// process kept a live `WKWebView` that renders nothing, so the lifecycle planner never suspends
+    /// it and switching to it shows white — and because the tab still has a web view,
+    /// `loadInitialPageIfNeeded` declines to reload it. And a page that reliably kills its process
+    /// got reloaded every time it did, forever, which is a battery-flat loop rather than a recovery.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        guard webView === displayedWebView else { return }
-        AppLog.browser.warning("Web content process terminated; reloading active page")
-        webView.reload()
+        guard let tab = tabManager.tab(containing: webView) else { return }
+        let attempt = contentProcessRestarts[tab.id, default: 0] + 1
+        contentProcessRestarts[tab.id] = attempt
+
+        guard attempt <= Self.maximumContentProcessRestarts else {
+            AppLog.browser.error("Web content process kept terminating; not reloading again")
+            recordNavigationFailure(
+                BrowserContentProcessError.terminatedRepeatedly,
+                for: tab,
+                attemptedURL: tab.url
+            )
+            return
+        }
+
+        AppLog.browser.warning("Web content process terminated; reloading (attempt \(attempt, privacy: .public))")
+        // After a crash the back-forward list survives, so reload() usually has somewhere to go. A
+        // tab that died before anything committed has nothing to reload, and needs the address.
+        if webView.backForwardList.currentItem != nil {
+            webView.reload()
+        } else if let url = tab.url, url.absoluteString != "about:blank" {
+            tabManager.navigate(to: url, in: tab.id)
+        }
     }
 
     func webView(
@@ -1309,16 +1395,31 @@ extension BrowserViewController: WKNavigationDelegate {
     /// "nothing to report" is right for the error view and wrong for the address.
     private func handleNavigationFailure(_ error: Error, webView: WKWebView, wasProvisional: Bool) {
         guard let tab = tabManager.tab(containing: webView) else { return }
+        let nsError = error as NSError
+        // Taken from the error rather than from the web view: by the time this runs WebKit has
+        // already put `url` back to whatever last committed, so the address that failed is only
+        // still readable here.
+        let attemptedURL = (nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL) ?? webView.url
+
         if wasProvisional {
             tabManager.revertToCommittedURL(
                 tabID: tab.id,
                 committedURL: webView.backForwardList.currentItem?.url
             )
         }
-        let nsError = error as NSError
+
+        // Before the cancellation check. A tab restored from suspension shows its snapshot until
+        // something says the load is over, and the only two things that did were didFinish and the
+        // error view — so a restore that ended in cancellation left the snapshot on screen forever,
+        // over a live web view the user could not see they were interacting with.
+        tabManager.markRestorationComplete(tabID: tab.id)
+        if tab.id == tabManager.selectedTabID {
+            hideRestorationOverlay(animated: false)
+        }
+
         guard nsError.code != NSURLErrorCancelled else { return }
         BrowserDiagnostics.shared.recordNavigationEvent()
-        showNavigationError(error, for: tab)
+        recordNavigationFailure(error, for: tab, attemptedURL: attemptedURL)
     }
 }
 

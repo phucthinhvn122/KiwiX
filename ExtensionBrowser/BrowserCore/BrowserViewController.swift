@@ -247,7 +247,11 @@ final class BrowserViewController: UIViewController {
             // Horizontal edges follow the safe area too, not just the top one. On a notched phone
             // held sideways the inset is on the side, and a view pinned to the raw edge puts page
             // content under the cut-out.
-            webContentContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            // Top edge of the window, not of the safe area. A browser's page fills the screen and
+            // scrolls under the status bar; pinning the container below the notch left a band of app
+            // background above every site, which reads as the page being cut off. The scroll view
+            // insets the content instead — see `WebViewFactory`.
+            webContentContainer.topAnchor.constraint(equalTo: view.topAnchor),
             webContentContainer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             webContentContainer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
 
@@ -256,7 +260,9 @@ final class BrowserViewController: UIViewController {
             snapshotView.trailingAnchor.constraint(equalTo: webContentContainer.trailingAnchor),
             snapshotView.bottomAnchor.constraint(equalTo: webContentContainer.bottomAnchor),
 
-            startPageView.topAnchor.constraint(equalTo: webContentContainer.topAnchor),
+            // The app's own surfaces stay inside the safe area: only a web page is allowed to draw
+            // under the notch, because only a web page brings its own background with it.
+            startPageView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             startPageView.leadingAnchor.constraint(equalTo: webContentContainer.leadingAnchor),
             startPageView.trailingAnchor.constraint(equalTo: webContentContainer.trailingAnchor),
             startPageView.bottomAnchor.constraint(equalTo: webContentContainer.bottomAnchor),
@@ -264,7 +270,7 @@ final class BrowserViewController: UIViewController {
             restorationSpinner.centerXAnchor.constraint(equalTo: webContentContainer.centerXAnchor),
             restorationSpinner.centerYAnchor.constraint(equalTo: webContentContainer.centerYAnchor),
 
-            errorView.topAnchor.constraint(equalTo: webContentContainer.topAnchor),
+            errorView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             errorView.leadingAnchor.constraint(equalTo: webContentContainer.leadingAnchor),
             errorView.trailingAnchor.constraint(equalTo: webContentContainer.trailingAnchor),
             errorView.bottomAnchor.constraint(equalTo: webContentContainer.bottomAnchor),

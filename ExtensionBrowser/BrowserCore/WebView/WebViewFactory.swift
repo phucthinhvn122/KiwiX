@@ -57,7 +57,15 @@ final class WebViewFactory {
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsLinkPreview = true
         webView.scrollView.keyboardDismissMode = .interactive
-        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        // `.always`, not `.never`. The web view now reaches the top of the window, so the page
+        // paints behind the status bar and the notch the way it does in Safari; the scroll view is
+        // what keeps the *content* out from under them. With `.never` the choice was between text
+        // under the clock and a dead strip above the page, and the strip is what shipped.
+        //
+        // No double inset in landscape: `webContentContainer` is still pinned to the horizontal safe
+        // area, so the web view sits entirely inside it and its own horizontal safe-area inset is
+        // zero. Only the top has anything left to inset.
+        webView.scrollView.contentInsetAdjustmentBehavior = .always
 
         #if DEBUG
         webView.isInspectable = true

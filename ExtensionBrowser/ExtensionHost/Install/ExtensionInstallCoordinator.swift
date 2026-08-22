@@ -40,6 +40,21 @@ final class ExtensionInstallCoordinator {
     /// whole time. Two quick taps interleaved a load against an unload for the same context and
     /// left the runtime disagreeing with the record on disk about whether the extension was on.
     private var enablementInFlight: Set<String> = []
+    /// Why an extension that is installed and switched on is nevertheless doing nothing.
+    ///
+    /// Keyed by identifier, cleared when the extension loads cleanly, and surfaced by the Extensions
+    /// screen. Loading used to be a `Bool` nobody read and a log line nobody sees: an extension whose
+    /// context failed to load, or whose background script never started, looked exactly like one that
+    /// was working.
+    private(set) var runtimeProblems: [String: String] = [:]
+
+    /// How long to wait for background content before calling it dead.
+    ///
+    /// A working background page answers in milliseconds; only a broken one reaches this. MV3
+    /// `background.service_worker` is the case that matters — WebKit accepts the manifest,
+    /// `hasBackgroundContent` reports true, and the completion handler is never called at all
+    /// (DECISIONS §4.1, COMPATIBILITY.md). Without a deadline that is a hang, not a diagnosis.
+    private static let backgroundStartTimeout: TimeInterval = 10
     var onRecordsChanged: (([InstalledExtensionRecord]) -> Void)?
 
     init(
@@ -192,6 +207,7 @@ final class ExtensionInstallCoordinator {
             await load(record)
         } else {
             unload(identifier: identifier)
+            runtimeProblems.removeValue(forKey: identifier)
         }
     }
 
@@ -204,6 +220,7 @@ final class ExtensionInstallCoordinator {
     /// was unloaded, nothing was deleted, and the error reaches the caller with the state intact.
     func remove(identifier: String) async throws {
         records = try await store.remove(identifier: identifier)
+        runtimeProblems.removeValue(forKey: identifier)
         unload(identifier: identifier)
         onRecordsChanged?(records)
 
@@ -220,19 +237,49 @@ final class ExtensionInstallCoordinator {
               let resourceBaseURL = resourceURL(for: record.identifier) else { return false }
         guard host.loadedContext(uniqueIdentifier: record.identifier) == nil else { return true }
 
+        let context: WKWebExtensionContext
         do {
-            _ = try await host.loadExtension(
+            context = try await host.loadExtension(
                 resourceBaseURL: resourceBaseURL,
                 policy: record.permissionPolicy,
                 uniqueIdentifier: record.identifier
             )
-            return true
         } catch {
             // Deliberately not interpolated: an error from the runtime can carry a filesystem path,
             // and §7 keeps user-derived strings out of the log.
-            AppLog.extensions.error("An installed extension failed to load and stays disabled")
+            AppLog.extensions.error("An installed extension failed to load")
+            note(problem: "Failed to load", for: record.identifier)
             return false
         }
+
+        runtimeProblems.removeValue(forKey: record.identifier)
+        await startBackgroundContent(for: context, identifier: record.identifier)
+        return true
+    }
+
+    /// Starts the extension's background script, and records it when that does not happen.
+    ///
+    /// Nothing used to call this outside the tests. An extension is loaded into the controller and
+    /// then left to WebKit to wake lazily — which for an MV3 `background.service_worker` never
+    /// happens at all, so the popup, the listeners and every `chrome.*` call the extension makes at
+    /// startup simply do not run. The extension is installed, its switch is on, and it is inert.
+    /// Forcing the start turns that into an answer instead of a silence.
+    private func startBackgroundContent(
+        for context: WKWebExtensionContext,
+        identifier: String
+    ) async {
+        guard let host, context.webExtension.hasBackgroundContent else { return }
+        do {
+            try await host.loadBackgroundContent(for: context, timeout: Self.backgroundStartTimeout)
+        } catch {
+            AppLog.extensions.error("Background content did not start; the extension is loaded but inert")
+            note(problem: "Background script not running", for: identifier)
+        }
+    }
+
+    private func note(problem: String, for identifier: String) {
+        runtimeProblems[identifier] = problem
+        onRecordsChanged?(records)
     }
 
     private func unload(identifier: String) {

@@ -311,6 +311,11 @@ final class ExtensionsViewController: UITableViewController, UIDocumentPickerDel
         if !record.inertPermissions.isEmpty {
             parts.append("Request blocking inactive")
         }
+        // Measured at load, not predicted: the context failed, or the background script never
+        // started. Either way the switch is on and the extension is doing nothing.
+        if let problem = coordinator.runtimeProblems[record.identifier] {
+            parts.append(problem)
+        }
         return parts.joined(separator: " · ")
     }
 

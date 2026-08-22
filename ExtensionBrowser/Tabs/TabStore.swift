@@ -127,10 +127,18 @@ actor TabStore {
     private func normalized(_ session: TabSession) -> TabSession {
         let records = session.tabs.prefix(SafePersistence.maximumTabCount).compactMap { record -> TabRecord? in
             guard !record.isPrivate else { return nil }
-            if let url = record.url, !SafePersistence.isSafePersistedURL(url) {
-                return nil
-            }
             var normalized = record
+            if let url = record.url, !SafePersistence.isSafePersistedURL(url) {
+                // The address is dropped, the tab is not. Discarding the whole record made a tab the
+                // user had open disappear across a relaunch with nothing said — and a `blob:` or
+                // `data:` URL, which is all it takes to land here, is an ordinary thing for a page
+                // to leave a tab sitting on. It comes back as an empty tab instead.
+                normalized.url = nil
+                normalized.faviconURL = nil
+                normalized.snapshotFileName = nil
+                normalized.title = SafePersistence.title("New Tab")
+                return normalized
+            }
             normalized.title = SafePersistence.title(record.title)
             normalized.faviconURL = record.faviconURL.flatMap {
                 FaviconURLPolicy.validatedRemoteURL($0, relativeTo: record.url)

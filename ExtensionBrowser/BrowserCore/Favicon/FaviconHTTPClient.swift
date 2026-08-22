@@ -170,6 +170,13 @@ final class FaviconHTTPClient: @unchecked Sendable {
 
 actor FaviconRequestBroker {
     private struct PendingRequest {
+        /// Identity for this attempt, distinct from the key it is filed under.
+        ///
+        /// `requestKey` names a favicon, not a request, and the same favicon is fetched again the
+        /// next time a page needs it. Matching a completion on the key alone let a task that had
+        /// already been cancelled and forgotten deliver its result — usually a `CancellationError`
+        /// — to whichever attempt happened to be filed under that key by then.
+        let id: UUID
         let task: Task<Void, Never>
         var waiters: [UUID: CheckedContinuation<FaviconDownload, Error>]
     }
@@ -215,15 +222,16 @@ actor FaviconRequestBroker {
                 return
             }
 
+            let requestID = UUID()
             let task = Task { [weak self, client = self.client] in
                 do {
                     let download = try await client.download(from: url)
-                    await self?.finish(requestKey: requestKey, result: .success(download))
+                    await self?.finish(requestID: requestID, requestKey: requestKey, result: .success(download))
                 } catch {
-                    await self?.finish(requestKey: requestKey, result: .failure(error))
+                    await self?.finish(requestID: requestID, requestKey: requestKey, result: .failure(error))
                 }
             }
-            pending[requestKey] = PendingRequest(task: task, waiters: [waiterID: continuation])
+            pending[requestKey] = PendingRequest(id: requestID, task: task, waiters: [waiterID: continuation])
         }
     }
 
@@ -241,8 +249,9 @@ actor FaviconRequestBroker {
         }
     }
 
-    private func finish(requestKey: String, result: Result<FaviconDownload, Error>) {
-        guard let request = pending.removeValue(forKey: requestKey) else { return }
+    private func finish(requestID: UUID, requestKey: String, result: Result<FaviconDownload, Error>) {
+        guard let request = pending[requestKey], request.id == requestID else { return }
+        pending.removeValue(forKey: requestKey)
         for continuation in request.waiters.values {
             switch result {
             case .success(let download):

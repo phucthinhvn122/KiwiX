@@ -116,6 +116,13 @@ final class BrowserViewController: UIViewController {
             object: nil
         )
 
+        // The browser is the long-lived listener. Downloads that fail before anyone opens the
+        // Downloads screen — the concurrency cap refusing a fourth transfer, most visibly — had
+        // nowhere to be reported, so tapping a link simply did nothing.
+        downloadCoordinator.onError = { [weak self] message in
+            self?.presentDownloadPolicyAlert(message: message)
+        }
+
         // Startup reconciliation, which is where interrupted transfers are failed and hidden
         // `.kiwix-<uuid>.partial` orphans are deleted. Nothing else calls it at launch: the only
         // other callers are the Downloads screen appearing and its pull-to-refresh, so a partial

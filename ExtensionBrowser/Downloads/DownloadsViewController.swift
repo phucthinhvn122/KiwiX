@@ -8,6 +8,12 @@ final class DownloadsViewController: UITableViewController, UIDocumentInteractio
     /// not part of it — that is the thing that changes four times a second without moving a row.
     private var listComposition: [String] = []
     private var documentInteractionController: UIDocumentInteractionController?
+    /// Whoever was listening for coordinator errors before this screen took over.
+    ///
+    /// `onError` is a single closure, so opening Downloads displaces the browser's handler. It used
+    /// to keep it after dismissal — inert, because the closure holds a weak self — which meant every
+    /// later error, including "too many downloads are already running", went nowhere at all.
+    private var displacedErrorHandler: ((String) -> Void)?
 
     init(coordinator: DownloadCoordinator) {
         self.coordinator = coordinator
@@ -59,10 +65,18 @@ final class DownloadsViewController: UITableViewController, UIDocumentInteractio
             self.updateEmptyState()
             self.navigationItem.rightBarButtonItem?.isEnabled = items.contains { $0.status.isFinished }
         }
+        displacedErrorHandler = coordinator.onError
         coordinator.onError = { [weak self] message in
             self?.showError(message)
         }
         reload()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        guard isBeingDismissed || navigationController?.isBeingDismissed == true else { return }
+        coordinator.onError = displacedErrorHandler
+        displacedErrorHandler = nil
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {

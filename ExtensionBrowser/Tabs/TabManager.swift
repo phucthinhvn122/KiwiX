@@ -442,18 +442,21 @@ final class TabManager {
         }
 
         for tab in tabsToSuspend {
-            guard generation == lifecycleGeneration,
-                  tab.id != selectedTabID else {
-                return
-            }
+            // A stale plan is abandoned; one tab that no longer qualifies is skipped. These were the
+            // same `return` before, so a single tab being selected mid-pass abandoned the suspension
+            // of every tab after it — and skipped the persistence at the end of the method with it.
+            guard generation == lifecycleGeneration else { return }
+            guard tab.id != selectedTabID, tabs.contains(where: { $0 === tab }) else { continue }
 
             delegate?.tabManager(self, willSuspend: tab)
             _ = await snapshotManager.capture(tab: tab)
 
-            guard generation == lifecycleGeneration,
-                  tab.id != selectedTabID else {
-                return
-            }
+            guard generation == lifecycleGeneration else { return }
+            // Re-checked after the await, and now for existence too: `capture` round-trips to the
+            // web content process, and a tab can be closed while it does. Tearing down a closed
+            // tab's web view is harmless, but announcing `didUpdate` for it sends the browser to a
+            // tab that is no longer in the list.
+            guard tab.id != selectedTabID, tabs.contains(where: { $0 === tab }) else { continue }
             tab.webView?.stopLoading()
             tab.webView?.navigationDelegate = nil
             tab.webView?.uiDelegate = nil

@@ -1108,7 +1108,7 @@ extension BrowserViewController: TabSwitcherViewControllerDelegate {
         popupCreationRateLimiter.remove(tabID: id)
         cancelFaviconLoad(tabID: id)
         tabManager.closeTab(id: id)
-        controller.removeItem(id: id)
+        controller.removeItem(id: id, newSelectedTabID: tabManager.selectedTabID)
     }
 
     func tabSwitcher(_ controller: TabSwitcherViewController, createPrivateTab: Bool) {

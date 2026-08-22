@@ -46,6 +46,34 @@ actor TabSnapshotStore {
         try fileManager.removeItem(at: url)
     }
 
+    /// Deletes snapshots no live tab claims.
+    ///
+    /// Nothing else enumerates this directory. A JPEG is removed only through `remove(fileName:)`,
+    /// which needs a `Tab` that still knows its filename — so a snapshot outlives its tab whenever
+    /// the record naming it never made it to disk: a session write that failed, a quarantined tab
+    /// file, a crash between the snapshot and the flush. Each one is up to 4 MiB in Caches, and iOS
+    /// purging the directory under memory pressure is not a cleanup strategy the app gets to rely on.
+    func discardOrphans(keeping liveFileNames: Set<String>) {
+        guard let directory = try? snapshotDirectory(create: false),
+              fileManager.fileExists(atPath: directory.path),
+              let listing = try? BoundedDirectoryReader.directChildren(
+                of: directory,
+                options: [.skipsHiddenFiles],
+                maximumEntryCount: SafePersistence.maximumTabCount * 8,
+                fileManager: fileManager
+              ) else {
+            return
+        }
+        for url in listing.entries {
+            let name = url.lastPathComponent
+            // Shape-checked before deleting, the same way every other path component read off the
+            // filesystem is in this project.
+            guard let normalized = SafePersistence.snapshotFileName(name),
+                  !liveFileNames.contains(normalized) else { continue }
+            try? fileManager.removeItem(at: url)
+        }
+    }
+
     private func snapshotDirectory(create: Bool) throws -> URL {
         if let explicitDirectoryURL {
             if create {
@@ -108,6 +136,11 @@ final class TabSnapshotManager {
         self.store = store ?? TabSnapshotStore()
     }
 
+    /// Deletes snapshot files that no restored tab names. Call once, after session restore.
+    func discardOrphans(keeping liveFileNames: Set<String>) async {
+        await store.discardOrphans(keeping: liveFileNames)
+    }
+
     @discardableResult
     func capture(tab: Tab) async -> UIImage? {
         guard let webView = tab.webView,
@@ -143,9 +176,20 @@ final class TabSnapshotManager {
             return image
         }
 
+        // Two suspension points have passed since the web view was read, and `closeTab` tears a tab
+        // down by clearing its web view and then deleting its snapshot. A close landing in that
+        // window used to delete nothing — `snapshotFileName` was still nil — and then this line
+        // wrote the JPEG anyway and named it on a Tab nobody holds, leaving a file in Caches that
+        // no tab will ever ask for and no code path will ever remove.
+        guard tab.webView === webView else { return image }
+
         let fileName = "\(tab.id.uuidString.lowercased()).jpg"
         do {
             try await store.save(data, fileName: fileName)
+            guard tab.webView === webView else {
+                try? await store.remove(fileName: fileName)
+                return image
+            }
             tab.snapshotFileName = fileName
         } catch {
             AppLog.tabs.error("Could not persist tab snapshot: \(error.localizedDescription, privacy: .private)")

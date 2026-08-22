@@ -130,8 +130,12 @@ final class TabManager {
             delegate?.tabManager(self, didSelect: selectedTab)
         }
 
+        // Every snapshot the restored session accounts for. Anything else in that directory belongs
+        // to a tab that no longer exists, and this is the only moment the full set is known.
+        let liveSnapshots = Set(tabs.compactMap(\.snapshotFileName))
         let backgroundTabs = tabs.filter { $0.id != selectedTabID && $0.snapshotFileName != nil }
-        Task { [weak self] in
+        Task { [weak self, snapshotManager] in
+            await snapshotManager.discardOrphans(keeping: liveSnapshots)
             guard let self else { return }
             for tab in backgroundTabs {
                 guard self.tab(id: tab.id) === tab else { continue }

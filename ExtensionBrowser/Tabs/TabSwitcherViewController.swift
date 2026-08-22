@@ -21,7 +21,10 @@ final class TabSwitcherViewController: UIViewController {
 
     weak var delegate: TabSwitcherViewControllerDelegate?
     private var items: [Item]
-    private let selectedTabID: UUID?
+    /// Follows the browser rather than freezing at init. Closing the selected tab makes `TabManager`
+    /// pick a replacement, and a snapshot taken when the sheet opened cannot know which one — so the
+    /// highlight either stayed on a row that no longer exists or vanished entirely.
+    private var selectedTabID: UUID?
     private lazy var collectionView = UICollectionView(frame: .zero, collectionViewLayout: makeLayout())
 
     init(items: [Item], selectedTabID: UUID?) {
@@ -80,11 +83,22 @@ final class TabSwitcherViewController: UIViewController {
         navigationItem.rightBarButtonItem = addButton
     }
 
-    func removeItem(id: UUID) {
+    /// - Parameter newSelectedTabID: which tab the browser moved to. Passed in rather than looked
+    ///   up, because the switcher deliberately holds no reference to `TabManager`.
+    func removeItem(id: UUID, newSelectedTabID: UUID?) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         items.remove(at: index)
+        selectedTabID = newSelectedTabID
         collectionView.deleteItems(at: [IndexPath(item: index, section: 0)])
         navigationItem.prompt = tabCountText
+        // The surviving rows are unchanged as data but not as appearance: one of them is now the
+        // current tab and has to draw its border.
+        for indexPath in collectionView.indexPathsForVisibleItems {
+            guard indexPath.item < items.count,
+                  let cell = collectionView.cellForItem(at: indexPath) as? TabCardCell else { continue }
+            let item = items[indexPath.item]
+            cell.configure(item: item, isSelectedTab: item.id == selectedTabID)
+        }
     }
 
     private var tabCountText: String {

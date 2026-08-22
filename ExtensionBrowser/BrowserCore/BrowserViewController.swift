@@ -205,6 +205,7 @@ final class BrowserViewController: UIViewController {
         webContentContainer.backgroundColor = KiwiTheme.canvas
         webContentContainer.clipsToBounds = true
         webContentContainer.accessibilityIdentifier = "browser.content"
+        startPageView.accessibilityIdentifier = "browser.startPage"
 
         // Tapping the page while the address bar is being edited puts the keyboard away, the way a
         // browser is expected to behave — there is no Cancel button, because the controls row

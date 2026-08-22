@@ -99,8 +99,48 @@ final class BrowserChromeAppearanceTests: XCTestCase {
             safeFrame.maxX,
             "Content runs \(contentFrame.maxX - safeFrame.maxX)pt past the right inset."
         )
-        XCTAssertGreaterThanOrEqual(contentFrame.minY, safeFrame.minY)
         XCTAssertFalse(contentFrame.isEmpty, "The content area collapsed instead of being inset.")
+    }
+
+    /// Vertically the content area is *supposed* to escape the safe area: a browser's page fills the
+    /// screen and scrolls under the status bar, and `WebViewFactory` sets
+    /// `contentInsetAdjustmentBehavior = .always` so the scroll view holds the text clear of the
+    /// notch instead. Pinning the container below the safe area instead — which is what shipped —
+    /// leaves a band of app background above every site, and on a dark theme over a light page that
+    /// reads as the page being cut off.
+    ///
+    /// Horizontal is the opposite case and is covered above: there the container really is inset,
+    /// because a landscape notch has to be cleared by geometry rather than by scrolling.
+    func testTheContentAreaReachesTheTopOfTheWindowSoThePageCanPaintUnderTheNotch() throws {
+        let content = try contentContainer()
+        controller.additionalSafeAreaInsets = UIEdgeInsets(top: 44, left: 0, bottom: 0, right: 0)
+        controller.view.layoutIfNeeded()
+
+        XCTAssertEqual(
+            content.frame.minY,
+            controller.view.bounds.minY,
+            accuracy: 0.5,
+            "The page cannot paint behind the status bar if its container starts below it."
+        )
+    }
+
+    /// The other half of the same contract. Only a web page may draw under the notch, because only a
+    /// web page brings its own background; the app's own surfaces have to stay inside the safe area
+    /// or their text sits under the clock.
+    func testTheStartPageStaysInsideTheSafeAreaEvenThoughItsContainerDoesNot() throws {
+        let startPage = try XCTUnwrap(
+            findView(UIView.self, identifier: "browser.startPage"),
+            "No view identified as browser.startPage."
+        )
+        controller.additionalSafeAreaInsets = UIEdgeInsets(top: 44, left: 0, bottom: 0, right: 0)
+        controller.view.layoutIfNeeded()
+
+        let safeFrame = controller.view.safeAreaLayoutGuide.layoutFrame
+        XCTAssertGreaterThanOrEqual(
+            startPage.frame.minY,
+            safeFrame.minY - 0.5,
+            "The start page is the app's own surface and must not run under the status bar."
+        )
     }
 
     // MARK: - Keyboard

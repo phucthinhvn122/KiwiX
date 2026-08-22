@@ -623,11 +623,14 @@ final class BrowserViewController: UIViewController {
             return outgoing
         }
         tabsButton.configuration = tabConfiguration
-        // The count lives in the button's title, which an explicit accessibilityLabel overrides —
-        // so VoiceOver said "Show tabs" and never how many there were.
-        tabsButton.accessibilityLabel = tabManager.tabs.count == 1
-            ? "Show tabs, 1 tab open"
-            : "Show tabs, \(tabManager.tabs.count) tabs open"
+        // The count lives in the button's title, which the explicit accessibilityLabel overrides —
+        // so VoiceOver said "Show tabs" and never how many there were. It goes in the *value*, not
+        // the label: the label is what identifies this control, to a person building a mental map of
+        // the toolbar and to `BrowserChromeUITests`, and a name that changes every time a tab opens
+        // is not a name.
+        tabsButton.accessibilityValue = tabManager.tabs.count == 1
+            ? "1 tab open"
+            : "\(tabManager.tabs.count) tabs open"
         menuButton.menu = makeBrowserMenu()
     }
 
